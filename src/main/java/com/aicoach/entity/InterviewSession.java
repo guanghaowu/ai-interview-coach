@@ -1,0 +1,52 @@
+package com.aicoach.entity;
+
+import com.baomidou.mybatisplus.annotation.FieldFill;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableLogic;
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+
+import java.io.Serializable;
+import java.time.LocalDateTime;
+
+/**
+ * 模拟面试会话
+ */
+@Data
+@TableName("interview_session")
+public class InterviewSession implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @TableId(type = IdType.AUTO)
+    private Long id;
+
+    /** 用户 ID */
+    private Long userId;
+
+    /** JD 内容的 MD5（用于复用题目） */
+    private String jdMd5;
+
+    /** 原始 JD */
+    private String jdContent;
+
+    /** AI 提取的岗位名 */
+    private String position;
+
+    /** AI 提取的技术栈 */
+    private String techStack;
+
+    /** 1=进行中 2=已结束 */
+    private Integer status;
+
+    @TableField(fill = FieldFill.INSERT)
+    private LocalDateTime createdAt;
+
+    @TableField(fill = FieldFill.INSERT_UPDATE)
+    private LocalDateTime updatedAt;
+
+    @TableLogic
+    private Integer deleted;
+}
