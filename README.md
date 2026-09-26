@@ -1,144 +1,226 @@
 # AiInterviewCoach —— AI 面试模拟平台
 
-> SpringBoot 3 + MyBatis-Plus + MySQL + Redis + RocketMQ + LangChain4j + DeepSeek
-> 标准版后端项目，用于 Java 后端实习简历
+> 输入岗位 JD → AI 自动生成面试题 → 作答 → AI 评分并给出改进建议，完整模拟一场技术面试。
+
+![Java](https://img.shields.io/badge/Java-17-blue)
+![SpringBoot](https://img.shields.io/badge/SpringBoot-3.2.5-green)
+![MySQL](https://img.shields.io/badge/MySQL-8.0-orange)
+![Redis](https://img.shields.io/badge/Redis-7-red)
+![RocketMQ](https://img.shields.io/badge/RocketMQ-5.3.1-purple)
 
 ---
 
-## ⚡ Day 1 启动步骤（5 步跑通）
+## 一、项目简介
 
-### 1. 启动 MySQL + Redis
-```bash
-cd ai-interview-simulator
-docker-compose up -d mysql redis
-docker-compose ps  # 确认两个服务都是 healthy
-```
+求职者练习面试时普遍面临三个问题：**没人出题、不知道答得好不好、题目和岗位不匹配**。
 
-### 2. 验证数据库连接
-```bash
-docker exec -it ai-coach-mysql mysql -uroot -p123456 -e "SHOW DATABASES;"
-# 应该看到 ai_coach 库
-```
+AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解析岗位要求、生成 3-5 道针对性面试题；
+用户作答后，AI 从准确性、深度、完整性三个维度评分，并给出具体的优点、缺点和改进建议。
 
-### 3. 在 IDE 中打开项目
-- IDEA: File → Open → 选择 `ai-interview-simulator/pom.xml`
-- 等待 Maven 同步依赖（第一次约 3-5 分钟）
-
-### 4. 启动 SpringBoot 应用
-- 找到 `AiInterviewCoachApplication.java`
-- 右键 → Run
-- 控制台看到 `AI Interview Coach 启动成功` 即成功
-
-### 5. 测试健康检查
-```bash
-curl http://localhost:8080/api/health
-```
-**预期返回**：
-```json
-{
-  "status": "UP",
-  "service": "ai-interview-coach",
-  "version": "0.0.1-SNAPSHOT",
-  "timestamp": "2026-09-26T19:00:00",
-  "day": "Day 1 - 脚手架已完成"
-}
-```
-
-> ✅ **Day 1 完成标志**：能看到上面这段 JSON
+**核心挑战不在业务逻辑，而在于**：AI 接口单次调用耗时 10-30 秒，同步调用会直接打满 Tomcat 线程池。
+因此项目围绕「**异步化 + 成本控制 + 稳定性**」做架构设计。
 
 ---
 
-## 📂 项目结构
+## 二、技术栈
 
-```
-ai-interview-simulator/
-├── pom.xml                         # Maven 依赖
-├── docker-compose.yml              # MySQL + Redis 一键起
-├── .gitignore
-├── README.md
-└── src/main/
-    ├── java/com/aicoach/
-    │   ├── AiInterviewCoachApplication.java   # 启动类
-    │   ├── config/
-    │   │   └── MybatisPlusConfig.java         # MyBatis-Plus 配置（分页 + 自动填充）
-    │   ├── controller/
-    │   │   └── HealthController.java          # 健康检查
-    │   └── entity/
-    │       └── User.java                      # 用户实体（Day 2 用）
-    └── resources/
-        ├── application.yml                    # 主配置（多环境）
-        └── application-dev.yml                # 开发环境（MySQL/Redis/DeepSeek）
-```
+| 分类 | 技术 |
+|---|---|
+| 框架 | SpringBoot 3.2.5、Spring AOP |
+| 持久层 | MyBatis-Plus 3.5.9、Druid 连接池、MySQL 8.0 |
+| 缓存 / 限流 | Redis 7（会话记忆、令牌桶限流、幂等） |
+| 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试） |
+| 大模型 | LangChain4j 0.36.2 + DeepSeek（OpenAI 兼容协议） |
+| 安全 | JWT（JJWT 0.12.5）+ BCrypt 密码加密 |
+| 部署 | Docker 多阶段构建 + Docker Compose |
+| 工具 | Hutool、Lombok |
 
 ---
 
-## 🛠️ 技术栈一览（按简历顺序）
+## 三、系统架构
 
-| 组件 | 版本 | 用途 |
-|---|---|---|
-| SpringBoot | 3.2.5 | 主框架 |
-| MyBatis-Plus | 3.5.9 | ORM |
-| MySQL | 8.0 | 数据库 |
-| Druid | 1.2.23 | 连接池 |
-| Redis | 7 | 缓存 / 限流 / 会话记忆 |
-| RocketMQ | 2.3.1 | 异步消息（Day 5 接入） |
-| LangChain4j | 0.36.2 | 大模型应用框架 |
-| DeepSeek | deepseek-chat | 大模型（OpenAI 兼容） |
-| JJWT | 0.12.5 | JWT 鉴权（Day 2 用） |
-| Hutool | 5.8.27 | 工具集 |
-| Java | 17 | 语言 |
+```
+                    ┌──────────────────────────────────────┐
+   POST /create ───▶│  InterviewController                 │
+   (创建会话)        │    └─ @RateLimit 令牌桶限流(10次/天)   │
+                    └──────────────┬───────────────────────┘
+                                   │ ① 创建会话(status=0 出题中)
+                                   │ ② 投递 MQ 消息
+                                   ▼
+                    ┌──────────────────────────────────────┐
+                    │  InterviewProducer → RocketMQ         │
+                    └──────────────┬───────────────────────┘
+                                   │ ③ 异步消费
+                                   ▼
+                    ┌──────────────────────────────────────┐
+                    │  InterviewConsumer                    │
+                    │    ├─ 幂等检查(ai_call_log)            │
+                    │    ├─ 指数退避重试 1s→2s→4s            │
+                    │    └─ LangChain4j → DeepSeek          │
+                    │         (Function Calling 工具)        │
+                    └──────────────┬───────────────────────┘
+                                   │ ④ 题目落库 + 更新 status=1
+                                   ▼
+   GET /{id} ──────▶  前端轮询拿结果
+```
+
+**为什么这样设计**：主接口只做「建会话 + 投消息」，**1 秒内返回**；
+AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避免 HTTP 线程被长耗时 AI 调用占满。
 
 ---
 
-## 🔌 API 接口清单
+## 四、核心功能
 
-### 用户模块（Day 2）
+| 功能 | 说明 |
+|---|---|
+| 用户体系 | 注册 / 登录 / JWT 鉴权 / BCrypt 密码加密 |
+| AI 出题 | 提交 JD → 生成 3-5 道题（题型混合：八股 / 场景 / 编程 / 项目） |
+| AI 评分 | 提交回答 → 1-10 分 + 优点 / 缺点 / 改进建议 |
+| 会话记忆 | Redis 存对话历史（TTL 24h，保留最近 20 条） |
+| 使用配额 | 每用户每天 10 次 AI 调用（Redis 令牌桶） |
+| 结果复用 | 相同 JD 复用已生成的题目，节省 Token |
+
+---
+
+## 五、接口清单
+
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/api/user/register` | 否 | 注册，返回 JWT |
 | POST | `/api/user/login` | 否 | 登录，返回 JWT |
 | GET | `/api/user/info` | 是 | 当前用户信息 |
-
-### 模拟面试模块（Day 3-4）
-| 方法 | 路径 | 鉴权 | 说明 |
-|---|---|---|---|
-| POST | `/api/interview/create` | 是 | 创建会话，AI 根据 JD 出题 |
-| GET | `/api/interview/{sessionId}` | 是 | 会话详情（含题目列表） |
-| POST | `/api/interview/answer` | 是 | 提交回答，AI 评分 + 反馈 |
-
-### 系统
-| 方法 | 路径 | 鉴权 | 说明 |
-|---|---|---|---|
+| POST | `/api/interview/create` | 是 | 创建会话（AI 异步出题） |
+| GET | `/api/interview/{sessionId}` | 是 | 会话详情（含题目） |
+| POST | `/api/interview/answer` | 是 | 提交回答（AI 评分） |
 | GET | `/api/health` | 否 | 健康检查 |
 
-## 🗺️ 接下来的路线（参考作战地图）
+**会话状态**：`0` = AI 出题中 ｜ `1` = 已完成 ｜ `2` = 失败
 
-| Day | 任务 |
-|---|---|
-| Day 2 | 建库建表 + User 模块 + JWT 鉴权 |
-| Day 3 | LangChain4j 接入 DeepSeek + AI 出题 |
-| Day 4 | AI 评分 + Redis 会话记忆 |
-| Day 5 | RocketMQ 异步化 + 指数退避重试 |
-| Day 6 | Redis 令牌桶限流 + MD5 缓存 |
-| Day 7 | Docker 部署 + 接口联调 |
-| Day 8 | 简历包装 + README |
+### 调用示例
+
+```bash
+# 1. 注册
+curl -X POST http://localhost:8080/api/user/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"123456"}'
+
+# 2. 登录拿 token
+TOKEN=$(curl -s -X POST http://localhost:8080/api/user/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"123456"}' | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# 3. 创建会话（立即返回，AI 异步出题）
+curl -X POST http://localhost:8080/api/interview/create \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"jdContent":"招聘 Java 后端实习生，熟悉 SpringBoot、MySQL、Redis，了解 RocketMQ"}'
+
+# 4. 轮询拿结果（status=1 表示出题完成）
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/interview/1
+```
 
 ---
 
-## ⚠️ 常见问题
+## 六、快速开始
 
-### Q1: 启动报 "Failed to bind on 0.0.0.0:8080"
-**A**: 端口被占用。修改 `application.yml` 的 `server.port: 8081`
+### 方式一：Docker 一键部署（推荐）
 
-### Q2: MySQL 连接失败 "Communications link failure"
-**A**: 检查 `docker-compose ps` 看 mysql 容器是否 healthy。等 30 秒再试。
+```bash
+# 1. 配置 API Key（不要提交到 git）
+#    在 src/main/resources/ 新建 application-local.yml：
+#    langchain4j:
+#      open-ai:
+#        chat-model:
+#          api-key: sk-你的DeepSeekKey
 
-### Q3: Redis 连接失败
-**A**: 检查 `docker-compose ps` 看 redis 容器是否 healthy。
+# 2. 启动全部服务（MySQL + Redis + RocketMQ + 应用）
+docker compose up -d
 
-### Q4: 启动后立刻看到 LangChain4j 报错
-**A**: 正常，Day 1 没接 DeepSeek 不会用 AI，可以忽略 LangChain4j 启动报错。
-   解决：在 `application-dev.yml` 把 `langchain4j` 整段注释掉，或填一个假 API Key。
+# 3. 建库建表（首次）
+docker exec -i ai-coach-mysql mysql -uroot -p123456 < src/main/resources/sql/init.sql
 
-### Q5: IDEA 报 "Cannot resolve symbol SpringBootApplication"
-**A**: Maven 没同步。右侧 Maven 面板 → Reload All Maven Projects。
+# 4. 验证
+curl http://localhost:8080/api/health
+```
+
+### 方式二：本地开发
+
+```bash
+# 依赖
+docker compose up -d mysql redis rocketmq-namesrv rocketmq-broker
+
+# 建表
+docker exec -i ai-coach-mysql mysql -uroot -p123456 < src/main/resources/sql/init.sql
+
+# 编译（项目自带 Maven Wrapper，无需预装 Maven）
+./mvnw -B clean compile
+
+# 启动（显式指定端口 + 跳过测试编译）
+SERVER_PORT=8080 ./mvnw spring-boot:run -Dmaven.test.skip=true
+```
+
+---
+
+## 七、技术亮点
+
+### 1. RocketMQ 异步化，主接口秒级返回
+AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍高就阻塞整个服务。
+改为「建会话 + 投 MQ」后主接口立即返回，AI 调用在消费端执行，前端轮询取结果。
+
+### 2. 指数退避重试 + 幂等去重
+三方 API 存在网络抖动。失败后按 **1s → 2s → 4s** 退避重试（最多 3 次）；
+同时用 `ai_call_log` 表以 `(userId, jdMd5)` 为唯一键做幂等，避免 MQ 重投导致重复出题。
+
+### 3. Redis 令牌桶限流（Lua 原子执行）
+每用户每天 10 次 AI 调用配额，用 Lua 脚本保证「取令牌 + 回写」的原子性。
+
+> 踩坑记录：速率计算必须用 `double`。若用 `long`，`10/86400` 取整为 `0`、被兜底成 `1`，
+> 会导致补充速率大于消耗速率，**限流彻底失效**。
+
+### 4. Function Calling 获取真实上下文
+通过 LangChain4j `@Tool` 暴露两个工具（查询会话题目、查询题目原文），
+让模型评分时能主动调用工具获取上下文，而不是凭空编造。
+
+### 5. Redis 会话记忆
+用 Redis List 存对话历史（`interview:memory:{sessionId}`），TTL 24h，自动 trim 到最近 20 条，
+支持多轮追问场景。
+
+### 6. Docker 多阶段构建
+构建阶段用 Maven 镜像编译，运行阶段只保留 JRE（alpine），显著减小镜像体积；
+`COPY pom.xml` 单独下载依赖以利用 Docker 层缓存。
+
+---
+
+## 八、项目结构
+
+```
+src/main/java/com/aicoach/
+├── ai/              # LangChain4j 服务接口 + Function Calling 工具
+├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
+├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j 配置
+├── controller/      # 接口层
+├── dto/             # 入参 DTO / 出参 VO
+├── entity/          # 数据库实体
+├── mapper/          # MyBatis-Plus Mapper
+├── mq/              # RocketMQ 生产者 / 消费者 / 消息体
+└── service/         # 业务层
+```
+
+---
+
+## 九、数据库设计
+
+6 张表：`user`（用户）、`interview_session`（会话）、`question`（题目）、
+`answer`（回答）、`feedback`（评分反馈）、`ai_call_log`（AI 调用日志 / 幂等）。
+
+关键索引：
+- `interview_session(user_id, created_at DESC)` —— 用户会话列表
+- `interview_session(jd_md5)` —— JD 复用查询
+- `ai_call_log(user_id, call_md5)` 唯一索引 —— 幂等去重
+
+---
+
+## 十、已知限制
+
+- 前端未实现（当前通过 curl / Postman 验证）
+- 未写单元测试（优先保证功能完整度）
+- 会话的「岗位名 / 技术栈」字段目前是占位值，待后续用 AI 回填
