@@ -77,11 +77,12 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # 使用 docker profile（host 走服务名）
-      SPRING_PROFILES_ACTIVE: docker
+      # docker profile（host 走服务名）+ local（读取挂载进来的私有 Key）
+      SPRING_PROFILES_ACTIVE: docker,local
       SERVER_PORT: 8080
-      # 从宿主机环境变量注入，未设置时用占位符
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-your-api-key-here}
+    volumes:
+      # 把宿主机的私有配置挂进容器（只读）。Key 不写进镜像、不进 git。
+      - ./src/main/resources/application-local.yml:/app/config/application-local.yml:ro
     depends_on:
       mysql:
         condition: service_healthy
