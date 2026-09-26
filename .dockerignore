@@ -1,0 +1,25 @@
+# 构建镜像时排除的文件（减小构建上下文，加快构建）
+target/
+build/
+out/
+dist/
+
+.git/
+.gitignore
+.idea/
+*.iml
+.vscode/
+
+*.log
+logs/
+app-run.log
+
+# 本地私有配置（含真实 Key，绝不能进镜像）
+src/main/resources/application-local.yml
+
+docs/
+README.md
+CLAUDE.md
+docker-compose.yml
+Dockerfile
+.dockerignore
