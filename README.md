@@ -2,7 +2,7 @@
 
 > 输入岗位 JD → AI 自动生成面试题 → 作答 → AI 评分并给出改进建议，完整模拟一场技术面试。
 
-![Java](https://img.shields.io/badge/Java-17-blue)
+![Java](https://img.shields.io/badge/Java-21-blue)
 ![SpringBoot](https://img.shields.io/badge/SpringBoot-3.2.5-green)
 ![MySQL](https://img.shields.io/badge/MySQL-8.0-orange)
 ![Redis](https://img.shields.io/badge/Redis-7-red)
@@ -30,6 +30,7 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 
 | 分类 | 技术 |
 |---|---|
+| 运行时 | Java 21 LTS（Spring Boot 3.2 的基线是 17，主动升到 21） |
 | 框架 | SpringBoot 3.2.5、Spring AOP |
 | 持久层 | MyBatis-Plus 3.5.9、Druid 连接池、MySQL 8.0 |
 | 缓存 / 限流 | Redis 7（响应缓存、会话记忆、令牌桶限流、幂等） |

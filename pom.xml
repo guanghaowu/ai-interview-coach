@@ -18,7 +18,11 @@
     <description>AI 面试模拟平台</description>
 
     <properties>
-        <java.version>17</java.version>
+        <!-- Java 21（LTS，维护至 2031）。选 21 而非 Spring Boot 3.2 的基线 17：
+             ① 本机 JDK 已是 21，与容器版本统一，消除「本地能跑、线上 ClassNotFound」类事故；
+             ② 项目里 LLM 调用是阻塞式的（单次 6~15 秒），21 的虚拟线程在此场景收益明显；
+             ③ 依赖全部为纯 Java 库，升级零代码改动（已核对无 sun.misc / com.sun.* 等被移除 API）。 -->
+        <java.version>21</java.version>
         <mybatis-plus.version>3.5.9</mybatis-plus.version>
         <langchain4j.version>0.36.2</langchain4j.version>
         <jjwt.version>0.12.5</jjwt.version>
