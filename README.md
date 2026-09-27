@@ -80,6 +80,7 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | 会话记忆 | Redis 存对话历史（TTL 24h，保留最近 20 条） |
 | 使用配额 | 每用户每天 10 次 AI 调用（Redis 令牌桶） |
 | 结果复用 | **同一用户**提交相同 JD 时复用其历史题目，节省 Token（按 userId 隔离，不会串到他人） |
+| 会话管理 | 我的会话列表（分页，含题目数 / 已答数）+ 会话完整详情（题目 / 每题最新回答 / 评分反馈） |
 
 ---
 
@@ -90,8 +91,11 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | POST | `/api/user/register` | 否 | 注册，返回 JWT |
 | POST | `/api/user/login` | 否 | 登录，返回 JWT |
 | GET | `/api/user/info` | 是 | 当前用户信息 |
+| PUT | `/api/user/info` | 是 | 修改昵称 / 头像 |
 | POST | `/api/interview/create` | 是 | 创建会话（AI 异步出题，限流 10 次/天） |
 | GET | `/api/interview/{sessionId}` | 是 | 会话详情（含题目），轮询出题结果 |
+| GET | `/api/interview/sessions` | 是 | 我的会话列表（分页，含题目数 / 已答数） |
+| GET | `/api/interview/sessions/{sessionId}` | 是 | 会话完整详情（题目 + 每题最新回答 + 评分反馈） |
 | POST | `/api/interview/answer` | 是 | 提交回答（AI 异步评分，限流 10 次/天） |
 | GET | `/api/interview/answer/{answerId}` | 是 | 轮询评分结果 |
 | GET | `/api/health` | 否 | 健康检查 |
@@ -127,6 +131,17 @@ curl -X POST http://localhost:8080/api/interview/create \
 
 # 4. 轮询拿结果（status=1 表示出题完成）
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/interview/1
+
+# 5. 我的会话列表（分页）
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/interview/sessions?page=1&size=10"
+
+# 6. 会话完整详情（题目 + 每题最新回答 + 评分反馈）
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/interview/sessions/1
+
+# 7. 修改昵称 / 头像
+curl -X PUT http://localhost:8080/api/user/info \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"nickname":"面试练习生"}'
 ```
 
 ---
@@ -205,15 +220,27 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 `COPY pom.xml` 单独下载依赖以利用 Docker 层缓存。
 
 ### 7. 事务边界设计
-- `createSession` 用 `@Transactional` 把「会话落库 + MQ 投递」绑成一个原子操作，投递失败即回滚，
-  不会留下永远停在 `status=0` 的僵尸会话；
-- 评分落库则相反：AI 调用耗时 5-15 秒，**绝不能放进事务**，否则一个请求就要占着数据库连接 15 秒，
-  连接池（max-active=20）并发 20 就爆。所以单独抽出 `FeedbackService.saveGradingResult`，
-  事务只包住「插 feedback + 回填 answer」两条写操作，外部调用留在事务外。
+事务全部收在 `SessionService` / `FeedbackService` 两个独立 Bean 里；编排层
+（`InterviewServiceImpl`）**刻意不加 `@Transactional`** —— 既避免 private 方法自调用
+导致注解静默失效，也让每个方法的事务语义一目了然。三条原则：
+
+- **写操作原子化**：`copyQuestionsAndMarkDone` 把「复制题目 + 置为完成」放进同一事务，
+  中途失败整体回滚，杜绝「题目不全却已完成」的会话；
+- **长耗时调用留在事务外**：AI 评分耗时 5-15 秒，绝不能进事务，否则一个请求就占着数据库连接
+  15 秒，连接池（max-active=20）并发 20 就爆。所以 `FeedbackService.saveGradingResult`
+  只包住「插 feedback + 回填 answer」两条写操作；
+- **MQ 投递放在事务提交之后**：若在事务内投递，消息可能先于提交被消费，
+  消费端按 READ_COMMITTED 读不到会话行，于是题目写进去了、会话却永远停在「出题中」。
+  投递失败时走补偿——把会话置为失败终态，而不是留下僵尸会话。
 
 ### 8. Knife4j 在线接口文档
 集成 OpenAPI3（springdoc），`/doc.html` 可视化调试，全局配置 JWT 认证方案，
 点一下 Authorize 就能带 token 调接口，省去手写 curl。
+
+### 9. 列表接口避免 N+1
+会话列表要展示每条的题目数与已答数。直觉写法是「查一页会话 → 逐条 count」，那是 1+N 次查询；
+这里改成「一次 IN 查询 + 内存分组」，整页固定 2 次查询。一页最多 20 条会话、每条几道题，
+数据量完全可控——用极小的内存代价换掉 N 次数据库往返。
 
 ---
 
