@@ -208,7 +208,7 @@ public class InterviewServiceImpl implements InterviewService {
         // 1. 查题目
         Question question = questionService.getById(dto.getQuestionId());
         if (question == null) {
-            throw new BusinessException("题目不存在");
+            throw new BusinessException(404, "题目不存在");
         }
 
         // 2. 查会话并校验归属
@@ -255,7 +255,7 @@ public class InterviewServiceImpl implements InterviewService {
 
         Answer answer = answerMapper.selectById(answerId);
         if (answer == null) {
-            throw new BusinessException("回答不存在");
+            throw new BusinessException(404, "回答不存在");
         }
         if (!answer.getUserId().equals(userId)) {
             throw new BusinessException(403, "无权访问该回答");
@@ -309,7 +309,7 @@ public class InterviewServiceImpl implements InterviewService {
     private InterviewSession requireOwnedSession(Long sessionId, Long userId) {
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null) {
-            throw new BusinessException("会话不存在");
+            throw new BusinessException(404, "会话不存在");
         }
         if (!session.getUserId().equals(userId)) {
             throw new BusinessException(403, "无权访问该会话");

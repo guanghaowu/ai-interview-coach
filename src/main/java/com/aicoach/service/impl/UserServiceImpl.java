@@ -44,7 +44,7 @@ public class UserServiceImpl implements UserService {
                 new LambdaQueryWrapper<User>().eq(User::getUsername, dto.getUsername())
         );
         if (count != null && count > 0) {
-            throw new BusinessException("该用户名已被注册");
+            throw new BusinessException(409, "该用户名已被注册");
         }
 
         // 2. 构造用户
@@ -69,12 +69,12 @@ public class UserServiceImpl implements UserService {
                 new LambdaQueryWrapper<User>().eq(User::getUsername, dto.getUsername())
         );
         if (user == null) {
-            throw new BusinessException("用户名或密码错误");
+            throw new BusinessException(401, "用户名或密码错误");
         }
 
         // 2. 校验密码（注意：参数顺序是 rawPassword, encodedPassword）
         if (!PASSWORD_ENCODER.matches(dto.getPassword(), user.getPassword())) {
-            throw new BusinessException("用户名或密码错误");
+            throw new BusinessException(401, "用户名或密码错误");
         }
 
         log.info("用户登录成功: id={}, username={}", user.getId(), user.getUsername());
@@ -130,7 +130,7 @@ public class UserServiceImpl implements UserService {
         Long userId = requireLogin();
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new BusinessException("用户不存在");
+            throw new BusinessException(404, "用户不存在");
         }
         return user;
     }
