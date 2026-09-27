@@ -1,5 +1,6 @@
 package com.aicoach.service;
 
+import com.aicoach.constant.AnswerStatus;
 import com.aicoach.dto.FeedbackDTO;
 import com.aicoach.entity.Answer;
 import com.aicoach.entity.Feedback;
@@ -43,7 +44,7 @@ public class FeedbackService {
 
         answer.setScore(fb.getScore());
         answer.setFeedbackId(feedback.getId());
-        answer.setStatus(1);
+        answer.setStatus(AnswerStatus.GRADED.getCode());
         answerMapper.updateById(answer);
 
         log.info("评分结果落库完成: answerId={}, feedbackId={}, score={}",

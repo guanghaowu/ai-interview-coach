@@ -3,6 +3,7 @@ package com.aicoach.mq;
 import cn.hutool.json.JSONUtil;
 import com.aicoach.ai.InterviewAiService;
 import com.aicoach.common.RetryUtil;
+import com.aicoach.constant.AnswerStatus;
 import com.aicoach.dto.FeedbackDTO;
 import com.aicoach.entity.Answer;
 import com.aicoach.mapper.AnswerMapper;
@@ -47,7 +48,7 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
                 return;
             }
             // 已评分则跳过（MQ 重投场景），避免重复调 AI
-            if (Integer.valueOf(1).equals(answer.getStatus())) {
+            if (AnswerStatus.GRADED.matches(answer.getStatus())) {
                 log.info("该回答已评分，跳过: answerId={}", msg.getAnswerId());
                 return;
             }
@@ -85,8 +86,10 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
 
     private void markFailed(Long answerId) {
         Answer answer = answerMapper.selectById(answerId);
-        if (answer != null) {
-            answer.setStatus(2);
+        // 已评分成功的不改判：异常可能发生在落库之后的写会话记忆阶段（Redis 抖动），
+        // 若无条件改成「失败」，会把一次成功的评分抹掉。
+        if (answer != null && !AnswerStatus.GRADED.matches(answer.getStatus())) {
+            answer.setStatus(AnswerStatus.FAILED.getCode());
             answerMapper.updateById(answer);
         }
     }

@@ -2,13 +2,13 @@ package com.aicoach.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.crypto.digest.DigestUtil;
-import cn.hutool.json.JSONUtil;
 import com.aicoach.ai.InterviewAiService;
 import com.aicoach.common.BusinessException;
 import com.aicoach.common.ThreadLocalUtil;
+import com.aicoach.constant.AnswerStatus;
+import com.aicoach.constant.SessionStatus;
 import com.aicoach.dto.AnswerResultVO;
 import com.aicoach.dto.CreateSessionDTO;
-import com.aicoach.dto.FeedbackDTO;
 import com.aicoach.dto.QuestionVO;
 import com.aicoach.dto.SessionVO;
 import com.aicoach.dto.SubmitAnswerDTO;
@@ -19,11 +19,11 @@ import com.aicoach.entity.Question;
 import com.aicoach.mapper.AnswerMapper;
 import com.aicoach.mapper.FeedbackMapper;
 import com.aicoach.mapper.InterviewSessionMapper;
-import com.aicoach.mapper.QuestionMapper;
 import com.aicoach.mq.AnswerMessage;
 import com.aicoach.mq.InterviewMessage;
 import com.aicoach.mq.InterviewProducer;
 import com.aicoach.service.InterviewService;
+import com.aicoach.service.QuestionService;
 import com.aicoach.service.SessionMemoryService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
@@ -44,9 +44,9 @@ public class InterviewServiceImpl implements InterviewService {
 
     private final InterviewAiService interviewAiService;
     private final InterviewSessionMapper sessionMapper;
-    private final QuestionMapper questionMapper;
     private final AnswerMapper answerMapper;
     private final FeedbackMapper feedbackMapper;
+    private final QuestionService questionService;
     private final SessionMemoryService sessionMemoryService;
     private final InterviewProducer interviewProducer;
 
@@ -60,44 +60,33 @@ public class InterviewServiceImpl implements InterviewService {
 
         String jdMd5 = DigestUtil.md5Hex(dto.getJdContent());
 
-        // 1. 命中缓存：已有相同 JD 的已完成会话 → 复用题目，不再调 AI（省 Token）
-        // 注意：必须带 userId 过滤，否则会复用其他用户的题目（数据越界）
+        // 1. 命中缓存：本人已有相同 JD 的已完成会话 → 复用题目，不再调 AI（省 Token）
+        //    必须带 userId 过滤，否则会复用其他用户的题目（数据越界）
         InterviewSession cached = sessionMapper.selectOne(
                 new LambdaQueryWrapper<InterviewSession>()
                         .eq(InterviewSession::getUserId, userId)
                         .eq(InterviewSession::getJdMd5, jdMd5)
-                        .eq(InterviewSession::getStatus, 1)
+                        .eq(InterviewSession::getStatus, SessionStatus.DONE.getCode())
                         .orderByDesc(InterviewSession::getId)
                         .last("LIMIT 1"));
-        if (cached != null) {
-            List<Question> cachedQuestions = questionMapper.selectList(
-                    new LambdaQueryWrapper<Question>()
-                            .eq(Question::getSessionId, cached.getId())
-                            .orderByAsc(Question::getSortOrder));
-            if (!cachedQuestions.isEmpty()) {
-                return reuseQuestions(userId, dto, jdMd5, cachedQuestions);
-            }
+        if (cached != null && questionService.countBySession(cached.getId()) > 0) {
+            return reuseQuestions(userId, dto, jdMd5, cached.getId());
         }
 
         // 2. 未命中：先创建会话（status=0 表示「AI 出题中」），主接口不阻塞。
         //    整个方法带 @Transactional：会话落库与 MQ 投递是一个原子操作，
         //    投递失败就回滚，不会留下永远停在 status=0 的僵尸会话。
-        InterviewSession session = new InterviewSession();
-        session.setUserId(userId);
-        session.setJdMd5(jdMd5);
-        session.setJdContent(dto.getJdContent());
-        session.setPosition("解析中");
-        session.setTechStack("解析中");
-        session.setStatus(0);
+        InterviewSession session = newSession(userId, jdMd5, dto.getJdContent(),
+                SessionStatus.GENERATING, "解析中", "解析中");
         sessionMapper.insert(session);
 
-        // 2. 投递 MQ 异步任务，AI 出题在 Consumer 侧执行
+        // 3. 投递 MQ 异步任务，AI 出题在 Consumer 侧执行
         interviewProducer.sendGenerateTask(
                 new InterviewMessage(session.getId(), userId, dto.getJdContent(), jdMd5));
 
         log.info("会话创建成功（AI 异步出题中）: sessionId={}, userId={}", session.getId(), userId);
 
-        // 3. 立即返回；前端轮询 GET /api/interview/{sessionId} 取结果
+        // 4. 立即返回；前端轮询 GET /api/interview/{sessionId} 取结果
         return buildSessionVO(session, List.of());
     }
 
@@ -112,12 +101,7 @@ public class InterviewServiceImpl implements InterviewService {
             throw new BusinessException(403, "无权访问该会话");
         }
 
-        List<Question> questions = questionMapper.selectList(
-                new LambdaQueryWrapper<Question>()
-                        .eq(Question::getSessionId, sessionId)
-                        .orderByAsc(Question::getSortOrder)
-        );
-        return buildSessionVO(session, questions);
+        return buildSessionVO(session, questionService.listBySession(sessionId));
     }
 
     @Override
@@ -128,7 +112,7 @@ public class InterviewServiceImpl implements InterviewService {
         }
 
         // 1. 查题目
-        Question question = questionMapper.selectById(dto.getQuestionId());
+        Question question = questionService.getById(dto.getQuestionId());
         if (question == null) {
             throw new BusinessException("题目不存在");
         }
@@ -149,7 +133,7 @@ public class InterviewServiceImpl implements InterviewService {
         answer.setUserId(userId);
         answer.setContent(dto.getContent());
         answer.setRound(1);
-        answer.setStatus(0);
+        answer.setStatus(AnswerStatus.PENDING.getCode());
         answerMapper.insert(answer);
 
         // 5. 投递 MQ，AI 评分交给消费端执行。
@@ -164,7 +148,7 @@ public class InterviewServiceImpl implements InterviewService {
         // 6. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
         AnswerResultVO vo = new AnswerResultVO();
         vo.setAnswerId(answer.getId());
-        vo.setStatus(0);
+        vo.setStatus(AnswerStatus.PENDING.getCode());
         return vo;
     }
 
@@ -200,33 +184,35 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     /**
-     * 复用已有题目（相同 JD 命中缓存时调用）
+     * 复用已有题目（本人相同 JD 命中缓存时调用）
      */
-    private SessionVO reuseQuestions(Long userId, CreateSessionDTO dto, String jdMd5,
-                                     List<Question> cachedQuestions) {
-        InterviewSession session = new InterviewSession();
-        session.setUserId(userId);
-        session.setJdMd5(jdMd5);
-        session.setJdContent(dto.getJdContent());
-        session.setPosition("复用缓存");
-        session.setTechStack("复用缓存");
-        session.setStatus(1);
+    private SessionVO reuseQuestions(Long userId, CreateSessionDTO dto, String jdMd5, Long sourceSessionId) {
+        InterviewSession session = newSession(userId, jdMd5, dto.getJdContent(),
+                SessionStatus.DONE, "复用缓存", "复用缓存");
         sessionMapper.insert(session);
 
-        List<Question> copies = new ArrayList<>();
-        for (Question src : cachedQuestions) {
-            Question copy = new Question();
-            copy.setSessionId(session.getId());
-            copy.setType(src.getType());
-            copy.setContent(src.getContent());
-            copy.setDifficulty(src.getDifficulty());
-            copy.setSortOrder(src.getSortOrder());
-            questionMapper.insert(copy);
-            copies.add(copy);
-        }
+        List<Question> copies = questionService.copyTo(sourceSessionId, session.getId());
 
         log.info("命中 JD 缓存，复用题目: sessionId={}, 复用 {} 道题", session.getId(), copies.size());
         return buildSessionVO(session, copies);
+    }
+
+    /**
+     * 构造会话实体
+     *
+     * 创建与复用两条路径原先各写了一遍字段赋值，漏一个就会出诡异 bug，
+     * 统一收口到这里。
+     */
+    private InterviewSession newSession(Long userId, String jdMd5, String jdContent,
+                                        SessionStatus status, String position, String techStack) {
+        InterviewSession session = new InterviewSession();
+        session.setUserId(userId);
+        session.setJdMd5(jdMd5);
+        session.setJdContent(jdContent);
+        session.setPosition(position);
+        session.setTechStack(techStack);
+        session.setStatus(status.getCode());
+        return session;
     }
 
     private SessionVO buildSessionVO(InterviewSession session, List<Question> questions) {
