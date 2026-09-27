@@ -30,7 +30,7 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 
 | 分类 | 技术 |
 |---|---|
-| 运行时 | Java 21 LTS（Spring Boot 3.2 的基线是 17，主动升到 21） |
+| 运行时 | Java 21 LTS（Spring Boot 3.2 基线是 17，主动升到 21；**虚拟线程实测后未启用**，原因见压测报告 §3.6） |
 | 框架 | SpringBoot 3.2.5、Spring AOP |
 | 持久层 | MyBatis-Plus 3.5.9、Druid 连接池、MySQL 8.0 |
 | 缓存 / 限流 | Redis 7（响应缓存、会话记忆、令牌桶限流、幂等） |
