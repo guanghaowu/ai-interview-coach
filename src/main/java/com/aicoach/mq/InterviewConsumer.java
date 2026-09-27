@@ -45,9 +45,16 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         log.info("收到出题任务: sessionId={}, jdMd5={}", msg.getSessionId(), msg.getJdMd5());
 
         try {
-            // 1. 幂等检查：同一 (userId, jdMd5) 已成功处理过 → 复用已有题目。
-            //    注意：不能直接 return，否则当前会话永远停在 status=0，前端轮询不到结果。
+            // 1. 幂等检查：同一 (userId, jdMd5) 已成功处理过 → 复用已有题目，不要重复调 AI。
+            //    两个坑都要避开：
+            //    - 不能直接 return，否则当前会话永远停在 status=0，前端轮询不到结果
+            //    - 若当前会话已完成（MQ 重投场景），也不能做任何事，否则会把「成功」改判成「失败」
             if (isAlreadyProcessed(msg)) {
+                InterviewSession current = sessionMapper.selectById(msg.getSessionId());
+                if (current != null && Integer.valueOf(1).equals(current.getStatus())) {
+                    log.info("幂等命中且当前会话已完成，跳过: sessionId={}", msg.getSessionId());
+                    return;
+                }
                 reuseFromProcessed(msg);
                 return;
             }
@@ -103,6 +110,20 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
      * 不能直接 return —— 否则当前会话永远停在 status=0，前端永远轮询不到结果。
      */
     private void reuseFromProcessed(InterviewMessage msg) {
+        // 防重：当前会话已有题目说明之前复制过（消息重投），只补状态不再复制，否则题目会翻倍
+        Long alreadyCount = questionMapper.selectCount(
+                new LambdaQueryWrapper<Question>()
+                        .eq(Question::getSessionId, msg.getSessionId()));
+        if (alreadyCount != null && alreadyCount > 0) {
+            InterviewSession cur = sessionMapper.selectById(msg.getSessionId());
+            if (cur != null) {
+                cur.setStatus(1);
+                sessionMapper.updateById(cur);
+            }
+            log.info("幂等复用：当前会话已有 {} 道题，仅补状态", alreadyCount);
+            return;
+        }
+
         InterviewSession existing = sessionMapper.selectOne(
                 new LambdaQueryWrapper<InterviewSession>()
                         .eq(InterviewSession::getUserId, msg.getUserId())
@@ -114,11 +135,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
 
         if (existing == null) {
             log.warn("命中幂等但找不到可复用的会话: sessionId={}", msg.getSessionId());
-            InterviewSession cur = sessionMapper.selectById(msg.getSessionId());
-            if (cur != null) {
-                cur.setStatus(2);
-                sessionMapper.updateById(cur);
-            }
+            markFailed(msg.getSessionId());
             return;
         }
 
@@ -126,6 +143,14 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
                 new LambdaQueryWrapper<Question>()
                         .eq(Question::getSessionId, existing.getId())
                         .orderByAsc(Question::getSortOrder));
+
+        // 源会话 0 道题时不能置「完成」，否则前端拿到空题目的成功态
+        if (src.isEmpty()) {
+            log.warn("可复用会话无题目: sessionId={}, 源 sessionId={}",
+                    msg.getSessionId(), existing.getId());
+            markFailed(msg.getSessionId());
+            return;
+        }
 
         for (Question q : src) {
             Question copy = new Question();
@@ -143,6 +168,14 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
             sessionMapper.updateById(cur);
         }
         log.info("幂等复用完成: sessionId={}, 复用 {} 道题", msg.getSessionId(), src.size());
+    }
+
+    private void markFailed(Long sessionId) {
+        InterviewSession session = sessionMapper.selectById(sessionId);
+        if (session != null) {
+            session.setStatus(2);
+            sessionMapper.updateById(session);
+        }
     }
 
     private boolean isAlreadyProcessed(InterviewMessage msg) {
