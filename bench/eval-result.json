@@ -1,0 +1,400 @@
+{
+  "sample": 8,
+  "dimension_consistency": {
+    "baseline": null,
+    "loop_draft": 100.0,
+    "loop_final": 100.0,
+    "draft_raw": [
+      40,
+      40
+    ],
+    "final_raw": [
+      40,
+      40
+    ]
+  },
+  "coverage": {
+    "baseline": 85.7,
+    "loop_draft": 85.7,
+    "loop_final": 85.7,
+    "baseline_raw": [
+      36,
+      42
+    ],
+    "final_raw": [
+      36,
+      42
+    ]
+  },
+  "process": {
+    "revised": 0,
+    "critic_degraded": 0,
+    "planner_degraded": 0
+  },
+  "details": [
+    {
+      "idx": 0,
+      "jd": "招聘 Java 后端实习生，熟悉 SpringBoot、MySQL、Redis，了解 RocketMQ 与高并发设计",
+      "points": [
+        "SpringBoot",
+        "MySQL",
+        "Redis",
+        "RocketMQ",
+        "高并发设计"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 5,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 5,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 5,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "五道题与各自标注维度一致，覆盖了 SpringBoot、MySQL、Redis、RocketMQ、高并发设计等 JD 核心技术点，无重复考察同一技术点，题目具体可作答，且包含难度 3 的高并发设计题，整体合格。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 1,
+      "jd": "招聘 Java 后端实习生，要求掌握 JVM 调优、多线程并发编程、MySQL 索引与事务，有分布式系统经验优先",
+      "points": [
+        "JVM 调优",
+        "多线程并发",
+        "MySQL 索引",
+        "MySQL 事务",
+        "分布式系统"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "5道题维度标注均与内容一致，覆盖JVM调优、多线程并发、MySQL索引与事务三大核心点，无重复题，难度以中高为主，具体性足够。",
+            "issues": [],
+            "missingDimensions": [
+              "分布式系统"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "idx": 2,
+      "jd": "招聘 Java 后端实习生，熟悉 Spring Cloud 微服务、Nacos 注册中心、Gateway 网关、Redis 分布式锁",
+      "points": [
+        "Java",
+        "Spring Cloud",
+        "Nacos",
+        "Gateway",
+        "Redis 分布式锁"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "五道题均与标注维度高度一致，覆盖了JD中的Spring Cloud微服务、Nacos注册中心、Gateway网关、Redis分布式锁四个核心技术点，无空泛题目，无重复考察同一技术点，难度分布合理（3道中等、2道较难）。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 3,
+      "jd": "招聘 Java 后端实习生，要求熟悉 Kafka 消息队列、Elasticsearch 搜索引擎、MongoDB，了解分库分表",
+      "points": [
+        "Java",
+        "Kafka",
+        "Elasticsearch",
+        "MongoDB",
+        "分库分表"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "所有题目维度标注与内容一致，Kafka、Elasticsearch、MongoDB、分库分表四个JD核心技术点均有覆盖，无重复题目，题目具体且难度以中等及以上为主，整体合格。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 4,
+      "jd": "招聘 Java 后端实习生，熟悉 MyBatis、MySQL 慢查询优化、Redis 缓存穿透击穿雪崩、线程池",
+      "points": [
+        "Java",
+        "MyBatis",
+        "MySQL 慢查询",
+        "Redis 缓存",
+        "线程池"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "5道题均与标注维度一致，覆盖了JD中的MyBatis、MySQL慢查询优化、Redis缓存问题、线程池等核心技术点，无重复题，题目具体且难度均为中等及以上，符合招聘要求。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 5,
+      "jd": "招聘 Java 后端实习生，掌握 Spring、SpringMVC、MyBatis、MySQL、Linux 常用命令、Git",
+      "points": [
+        "Spring",
+        "SpringMVC",
+        "MyBatis",
+        "MySQL",
+        "Linux 命令",
+        "Git"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 5,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 6,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 6,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "5道题维度标注均与内容一致，覆盖了JD中的Spring、SpringMVC、MyBatis、MySQL、Linux、Git核心技术点，无重复考察同一技术点，题目具体可作答，难度分布包含中等及以上题目。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 6,
+      "jd": "招聘 Java 后端实习生，要求了解 Docker 容器化、Kubernetes、CI/CD、Prometheus 监控、Nginx",
+      "points": [
+        "Java",
+        "Docker",
+        "Kubernetes",
+        "CI/CD",
+        "Prometheus",
+        "Nginx"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 6,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 5,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 5,
+        "cov_tot": 6,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "5道题分别对应Docker、Kubernetes、CI/CD、Prometheus、Nginx五个JD核心技术点，维度标注与内容一致，无张冠李戴；覆盖度完整，无重复考察同一技术点，题目具体可作答，难度均为中等及以上，符合招聘实习生要求。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    },
+    {
+      "idx": 7,
+      "jd": "招聘 Java 后端实习生，熟悉分布式事务 Seata、RocketMQ 可靠消息、Redis 分布式锁、接口幂等设计",
+      "points": [
+        "Java 后端",
+        "Seata",
+        "RocketMQ",
+        "Redis 分布式锁",
+        "接口幂等"
+      ],
+      "baseline": {
+        "consist_ok": 0,
+        "consist_tot": 0,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_draft": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "loop_final": {
+        "consist_ok": 5,
+        "consist_tot": 5,
+        "cov_ok": 4,
+        "cov_tot": 5,
+        "n": 5
+      },
+      "trace": {
+        "planner_degraded": false,
+        "critic_degraded": false,
+        "rounds": 1,
+        "critics": [
+          {
+            "passed": true,
+            "reason": "5道题维度标注与内容一致：分布式事务2题、消息可靠性1题、Redis分布式锁1题、接口幂等1题，覆盖JD核心技术点；无重复考察同一技术点；题目均具体可作答；难度分布合理（含2道难度3）。",
+            "issues": [],
+            "missingDimensions": []
+          }
+        ]
+      }
+    }
+  ]
+}

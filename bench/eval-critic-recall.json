@@ -1,0 +1,121 @@
+{
+  "recall": 100.0,
+  "fpr": 0.0,
+  "tp": 6,
+  "fn": 0,
+  "tn": 2,
+  "fp": 0,
+  "rows": [
+    {
+      "name": "① 维度张冠李戴（算法题挂 Redis）",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第1题：content 为通用算法题「两数之和」，与标注的 dimension「Redis 缓存应用」完全不符，需替换为真正的 Redis 缓存应用题目或修正维度标注。"
+      ],
+      "missing": [
+        "高并发设计"
+      ]
+    },
+    {
+      "name": "② 两题重复考同一技术点",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第3题：与第1、2题考察同一技术点（缓存穿透方案），存在重复；且要求比较布隆过滤器与空值缓存，偏架构选型，与「Redis 缓存应用」维度一致性不足。",
+        "第1、2、3题：三道题均围绕缓存穿透/击穿，去重不足，实质只覆盖了Redis缓存异常一个子点。",
+        "整体：JD明确要求了解RocketMQ与高并发设计，但题目中无任何RocketMQ或高并发设计相关题目。"
+      ],
+      "missing": [
+        "RocketMQ",
+        "高并发设计"
+      ]
+    },
+    {
+      "name": "③ 空泛到无法作答",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第1题：'请介绍一下 Java' 过于空泛，无法考察具体知识点，且难度仅为1，建议聚焦Java基础中的具体主题（如集合、并发、JVM）。",
+        "第2题：'说说你对 SpringBoot 的理解' 过于空泛，建议改为考察自动配置、启动流程、Starter机制等具体点。",
+        "第3题：'MySQL 怎么优化' 范围过大且表述笼统，维度标注为'MySQL 索引优化'但题目未限定索引，维度一致性不足。",
+        "第4题：'Redis 有什么用' 过于宽泛，未体现'缓存应用'的具体场景（如缓存穿透、雪崩、一致性）。",
+        "第5题：'消息队列是什么' 仅考察概念定义，且维度标注为'RocketMQ 消息队列'，但内容未涉及RocketMQ特性，维度一致性不足。",
+        "全部题目难度均为1，缺少中等及以上难度题目，无法评估实习生真实能力。"
+      ],
+      "missing": [
+        "高并发设计"
+      ]
+    },
+    {
+      "name": "④ 缺失 JD 核心维度（无 RocketMQ）",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第3题「MySQL 索引失效的常见场景有哪些？」与第2题「一条慢 SQL 你会如何排查与优化？」同属 MySQL 索引优化维度，存在一定重复考察同一技术点的倾向，建议合并或替换其中一题。",
+        "第5题「SpringBoot 内嵌 Tomcat 的启动流程是怎样的？」与第1题同属 SpringBoot 框架，但更偏实现细节，与 JD 对实习生核心能力要求关联度一般，可保留但优先级低于 RocketMQ/高并发。",
+        "缺少 RocketMQ 相关题目，JD 明确要求了解 RocketMQ，当前 5 题完全未覆盖。"
+      ],
+      "missing": [
+        "RocketMQ",
+        "高并发设计"
+      ]
+    },
+    {
+      "name": "⑤ 全是简单题（无中等及以上）",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第5题「线程池的核心参数有哪些？」难度1且仅考察参数记忆，属于高并发设计维度但过于基础，无法体现高并发设计能力",
+        "全部5题难度均为1，缺少中等及以上难度题目，不满足难度分布要求",
+        "第1题、第3题、第4题均为概念罗列型问题，偏识记，区分度较低"
+      ],
+      "missing": [
+        "RocketMQ 与高并发设计的结合场景（如削峰填谷、异步解耦）",
+        "MySQL 索引优化中的执行计划/慢查询/索引失效等实践点"
+      ]
+    },
+    {
+      "name": "⑥ 题目偏离 JD（问前端）",
+      "expected": false,
+      "got": false,
+      "ok": true,
+      "issues": [
+        "第1题（Vue3响应式原理）属于前端框架，与JD的Java后端岗位无关，维度标注错误，应删除或替换为后端题目",
+        "第2题（CSS flex布局）属于前端技术，与JD无关，维度标注错误，应删除或替换",
+        "第3题（JavaScript事件循环）属于前端技术，与JD无关，维度标注错误，应删除或替换",
+        "JD要求熟悉Redis，但5题中无任何Redis相关题目，未覆盖核心技能点",
+        "JD要求了解RocketMQ，但无相关题目，未覆盖消息队列维度",
+        "JD要求了解高并发设计，但无相关题目，未覆盖高并发维度",
+        "第4题与第5题分别考察SpringBoot和MySQL，方向正确，但覆盖度不足，缺少Redis、RocketMQ、高并发、SpringBoot与MySQL结合的实战题"
+      ],
+      "missing": [
+        "Redis 缓存应用",
+        "RocketMQ 消息队列",
+        "高并发设计",
+        "SpringBoot 与 MySQL/Redis 整合实战"
+      ]
+    },
+    {
+      "name": "⑦ 对照组-合格（应判通过）",
+      "expected": true,
+      "got": true,
+      "ok": true,
+      "issues": [],
+      "missing": []
+    },
+    {
+      "name": "⑧ 对照组-合格但略啰嗦（应放过）",
+      "expected": true,
+      "got": true,
+      "ok": true,
+      "issues": [],
+      "missing": []
+    }
+  ]
+}
