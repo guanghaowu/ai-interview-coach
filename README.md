@@ -7,6 +7,7 @@
 ![MySQL](https://img.shields.io/badge/MySQL-8.0-orange)
 ![Redis](https://img.shields.io/badge/Redis-7-red)
 ![RocketMQ](https://img.shields.io/badge/RocketMQ-5.3.1-purple)
+![Vue](https://img.shields.io/badge/Vue-3.5-42b883)
 
 ---
 
@@ -20,6 +21,9 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 **核心挑战不在业务逻辑，而在于**：AI 接口单次调用耗时 10-30 秒，同步调用会直接打满 Tomcat 线程池。
 因此项目围绕「**异步化 + 成本控制 + 稳定性**」做架构设计。
 
+项目含**完整前后端**：前端 Vue 3 + Element Plus（5 个页面：登录注册 / 会话列表 / 新建面试 / 答题评分 / 个人中心），
+由 nginx 托管并反向代理后端，一条 `docker compose up -d` 即可全栈启动。
+
 ---
 
 ## 二、技术栈
@@ -32,8 +36,9 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 | 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试） |
 | 大模型 | LangChain4j 0.36.2 + DeepSeek（OpenAI 兼容协议） |
 | 安全 | JWT（JJWT 0.12.5）+ BCrypt 密码加密 |
+| 前端 | Vue 3.5 + Vite 5 + Vue Router + Pinia + Axios + Element Plus |
 | 接口文档 | Knife4j 4.5.0（OpenAPI3 / springdoc 2.3.0） |
-| 部署 | Docker 多阶段构建 + Docker Compose |
+| 部署 | Docker 多阶段构建 + Docker Compose（nginx 托管前端 + 反代后端） |
 | 工具 | Hutool、Lombok |
 
 ---
@@ -41,6 +46,10 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 ## 三、系统架构
 
 ```
+  浏览器 · Vue 3 SPA（nginx 托管，http://localhost:8081）
+  所有请求走相对路径 /api/** ──nginx 反向代理──▶ ai-coach-app:8080
+                    │
+                    ▼
                     ┌──────────────────────────────────────┐
    POST /create ───▶│  InterviewController                 │
    (创建会话)        │    └─ @RateLimit 令牌桶限流(10次/天)   │
@@ -68,6 +77,10 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 **为什么这样设计**：主接口只做「建会话 + 投消息」，**1 秒内返回**；
 AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避免 HTTP 线程被长耗时 AI 调用占满。
 
+**前端为什么用 nginx 反代而不是直连后端**：前端所有请求写相对路径 `/api/**`，
+开发期由 Vite dev server 代理、生产期由 nginx 代理，两种环境代码零改动；
+同时因为同源，**天然没有跨域问题**，后端无需配置 CORS。
+
 ---
 
 ## 四、核心功能
@@ -82,6 +95,7 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | 使用配额 | 每用户每天 10 次 AI 调用（Redis 令牌桶） |
 | 结果复用 | **同一用户**提交相同 JD 时复用其历史题目，节省 Token（按 userId 隔离，不会串到他人） |
 | 会话管理 | 我的会话列表（分页，含题目数 / 已答数）+ 会话完整详情（题目 / 每题最新回答 / 评分反馈） |
+| **Web 前端** | Vue 3 SPA：登录注册 / 会话列表 / 新建面试（实时出题进度）/ 答题评分（维度标签 + 评分反馈）/ 个人中心 |
 
 ---
 
@@ -159,7 +173,7 @@ curl -X PUT http://localhost:8080/api/user/info \
 #        chat-model:
 #          api-key: sk-你的DeepSeekKey
 
-# 2. 启动全部服务（MySQL + Redis + RocketMQ + 应用）
+# 2. 启动全部服务（MySQL + Redis + RocketMQ + 后端 + 前端 nginx）
 docker compose up -d
 
 # 3. 建库建表（首次）
@@ -167,7 +181,12 @@ docker exec -i ai-coach-mysql mysql -uroot -p123456 < src/main/resources/sql/ini
 
 # 4. 验证
 curl http://localhost:8080/api/health
+
+# 5. 打开前端
+#    浏览器访问 http://localhost:8081
 ```
+
+> 首次构建前端镜像会执行 `npm ci && npm run build`，需要几分钟；之后有层缓存会很快。
 
 ### 方式二：本地开发
 
@@ -183,6 +202,21 @@ docker exec -i ai-coach-mysql mysql -uroot -p123456 < src/main/resources/sql/ini
 
 # 启动（显式指定端口 + 跳过测试编译）
 SERVER_PORT=8080 ./mvnw spring-boot:run -Dmaven.test.skip=true
+```
+
+前端本地开发（另开一个终端）：
+
+```bash
+cd client
+npm install
+npm run dev     # http://localhost:5173，已配置 /api 代理到 127.0.0.1:8080
+```
+
+前端构建产物：
+
+```bash
+cd client
+npm run build   # 输出到 client/dist
 ```
 
 ---
@@ -274,22 +308,45 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 这里改成「一次 IN 查询 + 内存分组」，整页固定 2 次查询。一页最多 20 条会话、每条几道题，
 数据量完全可控——用极小的内存代价换掉 N 次数据库往返。
 
+### 11. 前端同源反代 + 统一鉴权拦截
+
+前端所有请求写相对路径 `/api/**`，由 Vite（开发）/ nginx（生产）代理到后端，
+**同源因而无跨域**，后端一行 CORS 配置都不需要。
+
+axios 响应拦截器按后端的错误模型分两类处理：业务异常是 `HTTP 200 + code≠0`（只弹提示），
+只有 JWT 拦截器失败才是 `HTTP 401`（清 token 并跳登录）。这条区分很关键——
+如果按 `code===401` 跳登录，用户在登录页输错密码就会被反复踢回登录页。
+另外拦截器加了 `redirecting` 重入锁，避免并发请求同时 401 时触发多次跳转。
+
 ---
 
 ## 八、项目结构
 
 ```
-src/main/java/com/aicoach/
-├── ai/              # LangChain4j 服务接口 + AgentLoop 编排器 + Function Calling 工具
-├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
-├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j / Knife4j 配置
-├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
-├── controller/      # 接口层
-├── dto/             # 入参 DTO / 出参 VO
-├── entity/          # 数据库实体
-├── mapper/          # MyBatis-Plus Mapper
-├── mq/              # RocketMQ 生产者 / 消费者 / 消息体
-└── service/         # 业务层
+ai-interview-simulator/
+├── src/main/java/com/aicoach/     # 后端
+│   ├── ai/              # LangChain4j 服务接口 + AgentLoop 编排器 + Function Calling 工具
+│   ├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
+│   ├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j / Knife4j 配置
+│   ├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
+│   ├── controller/      # 接口层
+│   ├── dto/             # 入参 DTO / 出参 VO
+│   ├── entity/          # 数据库实体
+│   ├── mapper/          # MyBatis-Plus Mapper
+│   ├── mq/              # RocketMQ 生产者 / 消费者 / 消息体
+│   └── service/         # 业务层
+├── client/                        # 前端（Vue 3 + Vite + Element Plus）
+│   ├── src/
+│   │   ├── api/         # axios 实例（JWT 注入 / 统一错误处理）+ 接口定义
+│   │   ├── router/      # 路由 + 登录守卫
+│   │   ├── stores/      # Pinia（登录态持久化）
+│   │   ├── layouts/     # 顶部导航布局
+│   │   ├── views/       # 5 个页面（登录 / 列表 / 新建 / 答题 / 个人中心）
+│   │   └── utils/       # 状态字典 / 时间格式化
+│   ├── nginx.conf       # SPA 回退 + /api 反向代理
+│   └── Dockerfile       # 多阶段构建：node build → nginx
+├── docker-compose.yml   # 6 个服务（mysql / redis / namesrv / broker / app / web）
+└── verify-full.sh       # 全链路回归脚本（49 项断言）
 ```
 
 ---
@@ -314,6 +371,6 @@ AgentLoop 相关字段：
 
 ## 十、已知限制
 
-- 前端未实现（当前通过 curl / Postman 验证）
-- 未写单元测试（优先保证功能完整度）
+- 前端为功能导向的轻量实现，未做单元测试与端到端测试
+- 后端未写单元测试（优先保证功能完整度）
 - 会话的「岗位名 / 技术栈」字段目前是占位值，待后续用 AI 回填

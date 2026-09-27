@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+# Vite 打包 vite.config 时的临时文件（构建被中断会残留）
+*.timestamp-*.mjs

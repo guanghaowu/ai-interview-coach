@@ -98,6 +98,27 @@ services:
       retries: 5
       start_period: 90s
 
+  # ========== 前端（nginx 托管静态资源 + 反代 /api）==========
+  # 访问入口： http://localhost:8081
+  # 前端所有请求走相对路径 /api/**，由 nginx 反代到 ai-coach-app:8080，
+  # 因此同源、无跨域，前端代码在 dev / prod 两种环境零改动。
+  ai-coach-web:
+    build: ./client
+    image: ai-coach-web:latest
+    container_name: ai-coach-web
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    depends_on:
+      ai-coach-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   mysql_data:
   redis_data:
