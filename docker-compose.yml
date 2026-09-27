@@ -113,7 +113,11 @@ services:
       ai-coach-app:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      # 必须写 127.0.0.1，不能写 localhost：
+      # 容器内 /etc/hosts 里 localhost 同时映射 127.0.0.1 和 ::1，
+      # busybox wget 会优先解析到 IPv6 的 ::1，而 nginx 默认只监听 IPv4，
+      # 结果是 "Connection refused" 导致容器永远 unhealthy（实测踩过）。
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
       interval: 15s
       timeout: 5s
       retries: 5
