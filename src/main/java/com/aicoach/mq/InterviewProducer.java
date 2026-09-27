@@ -20,6 +20,9 @@ public class InterviewProducer {
 
     public static final String TOPIC = "interview-generate-topic";
 
+    /** 评分任务 topic */
+    public static final String ANSWER_TOPIC = "interview-answer-topic";
+
     /**
      * 投递出题任务（同步发送，保证不丢）
      */
@@ -30,6 +33,19 @@ public class InterviewProducer {
         } catch (Exception e) {
             log.error("MQ 消息投递失败: sessionId={}", msg.getSessionId(), e);
             throw new BusinessException("任务投递失败，请稍后重试");
+        }
+    }
+
+    /**
+     * 投递评分任务（同步发送，保证不丢）
+     */
+    public void sendAnswerTask(AnswerMessage msg) {
+        try {
+            rocketMQTemplate.syncSend(ANSWER_TOPIC, msg);
+            log.info("MQ 评分消息投递成功: answerId={}", msg.getAnswerId());
+        } catch (Exception e) {
+            log.error("MQ 评分消息投递失败: answerId={}", msg.getAnswerId(), e);
+            throw new BusinessException("评分任务投递失败，请稍后重试");
         }
     }
 }

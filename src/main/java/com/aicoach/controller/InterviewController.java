@@ -42,8 +42,17 @@ public class InterviewController {
         return Result.success(interviewService.getSession(sessionId));
     }
 
+    /** 每个用户每天最多 10 次 AI 评分。
+     *  注意：评分同样调用大模型，若不限流，一条循环脚本就能刷爆 API 额度（资损风险）。 */
+    @RateLimit(key = "rate:answer", window = 86400, limit = 10, type = LimitType.USER)
     @PostMapping("/answer")
     public Result<AnswerResultVO> submitAnswer(@Valid @RequestBody SubmitAnswerDTO dto) {
         return Result.success(interviewService.submitAnswer(dto));
+    }
+
+    /** 轮询评分结果（异步化后，提交只返回 answerId，结果靠这个接口取） */
+    @GetMapping("/answer/{answerId}")
+    public Result<AnswerResultVO> getAnswerResult(@PathVariable Long answerId) {
+        return Result.success(interviewService.getAnswerResult(answerId));
     }
 }

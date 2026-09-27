@@ -10,6 +10,9 @@ public class AnswerResultVO {
 
     private Long answerId;
 
+    /** 0=评分中 1=已完成 2=失败（异步化后靠这个字段轮询） */
+    private Integer status;
+
     private Integer score;
 
     private String pros;

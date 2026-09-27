@@ -16,6 +16,9 @@ public interface InterviewService {
     /** 获取会话详情（含题目） */
     SessionVO getSession(Long sessionId);
 
-    /** 提交回答并获取 AI 评分 */
+    /** 提交回答：立即返回 answerId，AI 评分异步执行 */
     AnswerResultVO submitAnswer(SubmitAnswerDTO dto);
+
+    /** 查询评分结果（轮询用） */
+    AnswerResultVO getAnswerResult(Long answerId);
 }

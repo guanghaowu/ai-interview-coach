@@ -20,6 +20,7 @@ import com.aicoach.mapper.AnswerMapper;
 import com.aicoach.mapper.FeedbackMapper;
 import com.aicoach.mapper.InterviewSessionMapper;
 import com.aicoach.mapper.QuestionMapper;
+import com.aicoach.mq.AnswerMessage;
 import com.aicoach.mq.InterviewMessage;
 import com.aicoach.mq.InterviewProducer;
 import com.aicoach.service.InterviewService;
@@ -117,7 +118,6 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public AnswerResultVO submitAnswer(SubmitAnswerDTO dto) {
         Long userId = ThreadLocalUtil.get();
         if (userId == null) {
@@ -136,10 +136,10 @@ public class InterviewServiceImpl implements InterviewService {
             throw new BusinessException(403, "无权访问该题目");
         }
 
-        // 3. 写入会话记忆（Redis），供后续多轮对话使用
+        // 3. 写入会话记忆（用户本轮回答）
         sessionMemoryService.append(session.getId(), "user", dto.getContent());
 
-        // 4. 落库回答（待评分）
+        // 4. 落库回答（status=0 待评分）
         Answer answer = new Answer();
         answer.setQuestionId(dto.getQuestionId());
         answer.setSessionId(session.getId());
@@ -149,45 +149,50 @@ public class InterviewServiceImpl implements InterviewService {
         answer.setStatus(0);
         answerMapper.insert(answer);
 
-        // 5. 调 AI 评分（模型可经 Function Calling 调用 InterviewTools）
-        // 取会话历史再评分，否则 Redis 里的记忆只是「只写不读」，AI 看不到上下文
-        List<String> history = sessionMemoryService.getRecent(session.getId(), 10);
-        String historyText = history.isEmpty() ? "（无历史，这是第一轮）" : String.join("\n", history);
+        // 5. 投递 MQ，AI 评分交给消费端执行。
+        //    不能同步调：AI 评分耗时 5-15 秒，会长时间占用 HTTP 线程，
+        //    并发上来会耗尽 Tomcat 线程池，连累登录、查题等所有接口。
+        interviewProducer.sendAnswerTask(new AnswerMessage(
+                answer.getId(), dto.getQuestionId(), session.getId(), userId,
+                question.getContent(), dto.getContent()));
 
-        FeedbackDTO fb = interviewAiService.evaluateAnswer(
-                question.getContent(), dto.getContent(), historyText);
-        if (fb == null || fb.getScore() == null) {
-            answer.setStatus(2);
-            answerMapper.updateById(answer);
-            throw new BusinessException("AI 评分失败，请稍后重试");
-        }
+        log.info("回答已提交（AI 异步评分中）: answerId={}", answer.getId());
 
-        // 6. 落库反馈
-        Feedback feedback = new Feedback();
-        feedback.setAnswerId(answer.getId());
-        feedback.setPros(fb.getPros());
-        feedback.setCons(fb.getCons());
-        feedback.setSuggestions(fb.getSuggestions());
-        feedbackMapper.insert(feedback);
-
-        // 7. 回填回答的评分信息
-        answer.setScore(fb.getScore());
-        answer.setFeedbackId(feedback.getId());
-        answer.setStatus(1);
-        answerMapper.updateById(answer);
-
-        // 8. 记录 AI 反馈到会话记忆
-        sessionMemoryService.append(session.getId(), "assistant", JSONUtil.toJsonStr(fb));
-
-        log.info("回答评分完成: answerId={}, score={}", answer.getId(), fb.getScore());
-
-        // 9. 返回
+        // 6. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
         AnswerResultVO vo = new AnswerResultVO();
         vo.setAnswerId(answer.getId());
-        vo.setScore(fb.getScore());
-        vo.setPros(fb.getPros());
-        vo.setCons(fb.getCons());
-        vo.setSuggestions(fb.getSuggestions());
+        vo.setStatus(0);
+        return vo;
+    }
+
+    @Override
+    public AnswerResultVO getAnswerResult(Long answerId) {
+        Long userId = ThreadLocalUtil.get();
+        if (userId == null) {
+            throw new BusinessException(401, "未登录");
+        }
+
+        Answer answer = answerMapper.selectById(answerId);
+        if (answer == null) {
+            throw new BusinessException("回答不存在");
+        }
+        if (!answer.getUserId().equals(userId)) {
+            throw new BusinessException(403, "无权访问该回答");
+        }
+
+        AnswerResultVO vo = new AnswerResultVO();
+        vo.setAnswerId(answer.getId());
+        vo.setStatus(answer.getStatus());
+        vo.setScore(answer.getScore());
+
+        if (answer.getFeedbackId() != null) {
+            Feedback feedback = feedbackMapper.selectById(answer.getFeedbackId());
+            if (feedback != null) {
+                vo.setPros(feedback.getPros());
+                vo.setCons(feedback.getCons());
+                vo.setSuggestions(feedback.getSuggestions());
+            }
+        }
         return vo;
     }
 
