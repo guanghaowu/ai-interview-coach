@@ -61,6 +61,11 @@ public interface InterviewAiService {
             题目：{{question}}
 
             候选人回答：{{answer}}
+
+            本轮之前的对话历史（用于判断是否为追问、以及前后回答的一致性）：
+            {{history}}
             """)
-    FeedbackDTO evaluateAnswer(@V("question") String question, @V("answer") String answer);
+    FeedbackDTO evaluateAnswer(@V("question") String question,
+                               @V("answer") String answer,
+                               @V("history") String history);
 }

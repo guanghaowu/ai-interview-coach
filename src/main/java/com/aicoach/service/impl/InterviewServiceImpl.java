@@ -59,8 +59,10 @@ public class InterviewServiceImpl implements InterviewService {
         String jdMd5 = DigestUtil.md5Hex(dto.getJdContent());
 
         // 1. 命中缓存：已有相同 JD 的已完成会话 → 复用题目，不再调 AI（省 Token）
+        // 注意：必须带 userId 过滤，否则会复用其他用户的题目（数据越界）
         InterviewSession cached = sessionMapper.selectOne(
                 new LambdaQueryWrapper<InterviewSession>()
+                        .eq(InterviewSession::getUserId, userId)
                         .eq(InterviewSession::getJdMd5, jdMd5)
                         .eq(InterviewSession::getStatus, 1)
                         .orderByDesc(InterviewSession::getId)
@@ -148,7 +150,12 @@ public class InterviewServiceImpl implements InterviewService {
         answerMapper.insert(answer);
 
         // 5. 调 AI 评分（模型可经 Function Calling 调用 InterviewTools）
-        FeedbackDTO fb = interviewAiService.evaluateAnswer(question.getContent(), dto.getContent());
+        // 取会话历史再评分，否则 Redis 里的记忆只是「只写不读」，AI 看不到上下文
+        List<String> history = sessionMemoryService.getRecent(session.getId(), 10);
+        String historyText = history.isEmpty() ? "（无历史，这是第一轮）" : String.join("\n", history);
+
+        FeedbackDTO fb = interviewAiService.evaluateAnswer(
+                question.getContent(), dto.getContent(), historyText);
         if (fb == null || fb.getScore() == null) {
             answer.setStatus(2);
             answerMapper.updateById(answer);

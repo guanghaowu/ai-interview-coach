@@ -17,6 +17,8 @@ import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
  * 出题任务消费者
  *
@@ -43,9 +45,10 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         log.info("收到出题任务: sessionId={}, jdMd5={}", msg.getSessionId(), msg.getJdMd5());
 
         try {
-            // 1. 幂等检查：同一 (userId, jdMd5) 已成功处理过则跳过
+            // 1. 幂等检查：同一 (userId, jdMd5) 已成功处理过 → 复用已有题目。
+            //    注意：不能直接 return，否则当前会话永远停在 status=0，前端轮询不到结果。
             if (isAlreadyProcessed(msg)) {
-                log.info("任务已处理过，跳过: sessionId={}", msg.getSessionId());
+                reuseFromProcessed(msg);
                 return;
             }
 
@@ -93,6 +96,53 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
             // 抛出异常，交给 RocketMQ 重试机制
             throw new RuntimeException("出题任务失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 命中幂等时：把已有会话的题目复制到当前会话，并把状态置为完成。
+     * 不能直接 return —— 否则当前会话永远停在 status=0，前端永远轮询不到结果。
+     */
+    private void reuseFromProcessed(InterviewMessage msg) {
+        InterviewSession existing = sessionMapper.selectOne(
+                new LambdaQueryWrapper<InterviewSession>()
+                        .eq(InterviewSession::getUserId, msg.getUserId())
+                        .eq(InterviewSession::getJdMd5, msg.getJdMd5())
+                        .eq(InterviewSession::getStatus, 1)
+                        .ne(InterviewSession::getId, msg.getSessionId())
+                        .orderByDesc(InterviewSession::getId)
+                        .last("LIMIT 1"));
+
+        if (existing == null) {
+            log.warn("命中幂等但找不到可复用的会话: sessionId={}", msg.getSessionId());
+            InterviewSession cur = sessionMapper.selectById(msg.getSessionId());
+            if (cur != null) {
+                cur.setStatus(2);
+                sessionMapper.updateById(cur);
+            }
+            return;
+        }
+
+        List<Question> src = questionMapper.selectList(
+                new LambdaQueryWrapper<Question>()
+                        .eq(Question::getSessionId, existing.getId())
+                        .orderByAsc(Question::getSortOrder));
+
+        for (Question q : src) {
+            Question copy = new Question();
+            copy.setSessionId(msg.getSessionId());
+            copy.setType(q.getType());
+            copy.setContent(q.getContent());
+            copy.setDifficulty(q.getDifficulty());
+            copy.setSortOrder(q.getSortOrder());
+            questionMapper.insert(copy);
+        }
+
+        InterviewSession cur = sessionMapper.selectById(msg.getSessionId());
+        if (cur != null) {
+            cur.setStatus(1);
+            sessionMapper.updateById(cur);
+        }
+        log.info("幂等复用完成: sessionId={}, 复用 {} 道题", msg.getSessionId(), src.size());
     }
 
     private boolean isAlreadyProcessed(InterviewMessage msg) {
