@@ -3,6 +3,8 @@
 # 项目 A 全链路回归脚本（覆盖 PRD 全部 11 个接口）
 # 用法: bash verify-full.sh
 # 前提: docker compose up -d 且 ai-coach-app 已 healthy
+#       [17] 段需要 docker CLI 可用来查 Redis 缓存 key；
+#       无 docker 时该段会判 FAIL（其余段落不受影响）
 # =====================================================
 cd "$(dirname "$0")" || exit 1
 
@@ -309,6 +311,57 @@ C1=$(curl_s -o /dev/null -w '%{http_code}' "$BASE/doc.html")
 check "GET /doc.html" "$C1" "200"
 C2=$(curl_s -o /dev/null -w '%{http_code}' "$BASE/v3/api-docs")
 check "GET /v3/api-docs" "$C2" "200"
+
+# ---------- 17. 响应缓存 ----------
+# 缓存引入了全新的失败模式，必须专门验证：
+#   1) 缓存真的生效（否则优化无从谈起）
+#   2) 缓存 key 含 userId（否则 A 能读到 B 的缓存 —— 越权，且绕过 403 校验）
+#   3) 出题中的会话不被缓存（否则题目生成完了前端还看到空列表）
+#   4) 写操作后缓存确实失效（否则数据长期陈旧）
+echo ""
+echo "[17] 响应缓存生效、失效与越权安全"
+
+# 17.1 详情缓存写入：连读两次，Redis 里应出现 sessionDetail:: 的 key
+curl_s -H "$AUTH" "$BASE/api/interview/sessions/$SID" >/dev/null
+curl_s -H "$AUTH" "$BASE/api/interview/sessions/$SID" >/dev/null
+DC=$(docker exec ai-coach-redis redis-cli --scan --pattern "sessionDetail::*" 2>/dev/null | wc -l | tr -d '\r ')
+check "详情缓存已写入 Redis" "$([ "${DC:-0}" -gt 0 ] && echo yes || echo no)" "yes"
+
+# 17.2 列表缓存写入
+curl_s -H "$AUTH" "$BASE/api/interview/sessions?page=1&size=10" >/dev/null
+LC=$(docker exec ai-coach-redis redis-cli --scan --pattern "sessionList::*" 2>/dev/null | wc -l | tr -d '\r ')
+check "列表缓存已写入 Redis" "$([ "${LC:-0}" -gt 0 ] && echo yes || echo no)" "yes"
+
+# 17.3 缓存 key 必须含 userId：缓存已存在时，他人请求仍须 403 而不是命中缓存返回 200
+R=$(curl_s -H "$AUTH2" "$BASE/api/interview/sessions/$SID")
+check "缓存已存在时他人仍 403" "$(echo "$R" | jget code)" "403"
+
+# 17.4 本人命中缓存仍能拿到正确数据
+R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions/$SID")
+check "本人读详情数据正确" "$(echo "$R" | jget data.questionCount)" "5"
+
+# 17.5 出题中的会话不得被缓存（unless 守卫）
+#      新建后立刻读一次详情（此时 status=0、题目尚未落库），
+#      等出题完成后再读，必须看到题目。若 status=0 的结果被缓存住，
+#      这里会一直读到 0 道题 —— 这正是「缓存最典型的坑」。
+JD_NEW="缓存守卫验证-$TS：招聘 Java 后端实习生，熟悉 SpringBoot、MySQL、Redis"
+NSID=$(curl_s -X POST "$BASE/api/interview/create" -H "Content-Type: application/json" \
+  -H "$AUTH" -d "{\"jdContent\":\"$JD_NEW\"}" | jget data.sessionId)
+R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions/$NSID")
+check "出题中详情 status=0（未被缓存）" "$(echo "$R" | jget data.status)" "0"
+for i in $(seq 1 45); do
+  ST=$(curl_s -H "$AUTH" "$BASE/api/interview/$NSID" | jget data.status)
+  [ "$ST" = "1" ] && break
+  [ "$ST" = "2" ] && break
+  sleep 2
+done
+R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions/$NSID")
+check "出题完成后读到真实题目（非陈旧缓存）" "$(echo "$R" | jget data.questionCount)" "5"
+
+# 17.6 写操作后列表缓存失效：新建的会话必须立刻出现在列表首条
+R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions?page=1&size=10")
+check "新建会话已出现在列表（列表缓存已失效）" \
+  "$(echo "$R" | jget data.records.0.sessionId)" "$NSID"
 
 echo ""
 echo "=========================================="

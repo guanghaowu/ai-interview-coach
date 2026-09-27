@@ -32,7 +32,7 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 |---|---|
 | 框架 | SpringBoot 3.2.5、Spring AOP |
 | 持久层 | MyBatis-Plus 3.5.9、Druid 连接池、MySQL 8.0 |
-| 缓存 / 限流 | Redis 7（会话记忆、令牌桶限流、幂等） |
+| 缓存 / 限流 | Redis 7（响应缓存、会话记忆、令牌桶限流、幂等） |
 | 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试） |
 | 大模型 | LangChain4j 0.36.2 + DeepSeek（OpenAI 兼容协议） |
 | 安全 | JWT（JJWT 0.12.5）+ BCrypt 密码加密 |
@@ -325,21 +325,24 @@ axios 响应拦截器按后端的错误模型分两类处理：业务异常是 `
 > 完整报告与测试方法见 [`docs/性能压测报告.md`](docs/性能压测报告.md)，
 > 复现命令 `bash bench/run-bench.sh`。
 
-**接口吞吐（并发 50）**
+**读接口吞吐：加 Redis 响应缓存前 → 后（并发 50）**
 
-| 接口 | QPS | p50 | p99 |
-|---|---|---|---|
-| `GET /api/health`（基线，无 DB） | **1920.6** | 25.0ms | 41.9ms |
-| `GET /sessions`（列表） | **323.9** | 147.1ms | 336.8ms |
-| `GET /sessions/{id}`（详情） | **510.7** | 92.9ms | 211.6ms |
+| 接口 | 优化前 QPS | 优化后 QPS | 提升 | 优化前 p99 | 优化后 p99 | 降幅 |
+|---|---|---|---|---|---|---|
+| `GET /sessions`（列表） | 323.9 | **1477.4** | **4.56×** | 336.8ms | **73.1ms** | **−78.3%** |
+| `GET /sessions/{id}`（详情） | 510.7 | **1454.8** | **2.85×** | 211.6ms | **72.0ms** | **−66.0%** |
+| `GET /api/health`（基线，无 DB） | 1920.6 | 2131.5 | 1.11× | 41.9ms | 42.8ms | — |
 
-**异步化收益：用户等待 9.3 秒 → 39 毫秒**
+> 基线本身两次运行间有 +11% 波动（压测机抖动），故绝对值只做量级判断；
+> 列表/详情 4.6× / 2.9× 的幅度远大于波动。冷启动（穿透 DB）实测：列表 53.8ms、详情 69.4ms。
+
+**异步化收益：用户等待 8.1 秒 → 39 毫秒**
 
 | 指标 | 值 | 来源 |
 |---|---|---|
-| 同步模型下用户要等（AI 真实耗时） | **9338ms** | `ai_call_log.duration_ms` 埋点实测 |
+| 同步模型下用户要等（AI 真实耗时） | **8069ms**（11 样本，5997~10375ms） | `ai_call_log.duration_ms` 埋点实测 |
 | 异步化后提交延迟（冷路径，走 MQ） | **约 39ms**（5 次采样 37.3~42.1ms） | 串行 curl 计时 |
-| **提升** | **约 240 倍** | |
+| **提升** | **约 207 倍** | |
 
 **限流与幂等**
 
@@ -352,9 +355,9 @@ axios 响应拦截器按后端的错误模型分两类处理：业务异常是 `
 > **HTTP 200 + `body.code != 0`**，通用压测工具（wrk / JMeter）只看状态码，
 > 会把被限流的请求误计为成功，结论完全相反。
 
-**已发现的优化项**：列表接口 p99 336.8ms 为全站最大延迟来源，根因是 Druid
-`max-active=20` 在 50 并发下排队；且全项目 `@Cacheable` 使用 0 处，读接口每次打 DB。
-—— 这两点已列入后续优化计划。
+**缓存的两条红线**（已写成回归断言，见 `verify-full.sh` 第 `[17]` 段）：
+① 缓存 key 含 `userId`，否则他人请求命中缓存会**绕过 403 归属校验**造成越权读；
+② 出题中的会话（`status=0`）用 `unless` 守卫排除，否则前端会一直读到空列表。
 
 ---
 
@@ -364,15 +367,15 @@ axios 响应拦截器按后端的错误模型分两类处理：业务异常是 `
 ai-interview-simulator/
 ├── src/main/java/com/aicoach/     # 后端
 │   ├── ai/              # LangChain4j 服务接口 + AgentLoop 编排器 + Function Calling 工具
-│   ├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
-│   ├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j / Knife4j 配置
+│   ├── common/          # Result / 异常 / JWT / 限流切面 / 缓存 key 构造
+│   ├── config/          # MyBatis-Plus / WebMvc / Redis / 响应缓存 / LangChain4j / Knife4j
 │   ├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
 │   ├── controller/      # 接口层
 │   ├── dto/             # 入参 DTO / 出参 VO
 │   ├── entity/          # 数据库实体
 │   ├── mapper/          # MyBatis-Plus Mapper
 │   ├── mq/              # RocketMQ 生产者 / 消费者 / 消息体
-│   └── service/         # 业务层
+│   └── service/         # 业务层（含 ResponseCacheService 缓存精准失效）
 ├── client/                        # 前端（Vue 3 + Vite + Element Plus）
 │   ├── src/
 │   │   ├── api/         # axios 实例（JWT 注入 / 统一错误处理）+ 接口定义
@@ -388,7 +391,7 @@ ai-interview-simulator/
 │   └── run-bench.sh     # 一键跑完整压测并输出报告
 ├── docs/                          # PRD 与性能压测报告
 ├── docker-compose.yml   # 6 个服务（mysql / redis / namesrv / broker / app / web）
-└── verify-full.sh       # 全链路回归脚本（49 项断言）
+└── verify-full.sh       # 全链路回归脚本（56 项断言，含缓存越权/失效红线）
 ```
 
 ---

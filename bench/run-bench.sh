@@ -53,6 +53,25 @@ print(d)
 
 NODE=$(command -v node || echo "/c/Users/Administrator/.workbuddy-ai/binaries/node/versions/22.22.2-3/node.exe")
 
+# 清空响应缓存（只删 session* 前缀的缓存 key，不动限流 / 会话记忆 / 幂等标记）
+# 只测热缓存会得出虚高的数字，必须能分别测冷启动与命中缓存两种情况。
+flush_response_cache() {
+  local keys
+  keys=$(docker exec ai-coach-redis redis-cli --scan --pattern "session*" 2>/dev/null | tr -d '\r' | tr '\n' ' ')
+  if [ -n "$keys" ]; then
+    # shellcheck disable=SC2086
+    docker exec ai-coach-redis redis-cli DEL $keys >/dev/null 2>&1
+  fi
+}
+
+# 单请求测冷启动延迟（缓存被清空后的第一次，必然穿透到 DB）
+cold_latency() {
+  local path="$1" label="$2"
+  "$NODE" bench/bench.js --url "$BASE" --path "$path" --token "$TOKEN" \
+    --concurrency 1 --requests 1 --label "$label" 2>/dev/null \
+    | grep -a -E "延迟" | sed 's/.*mean \([0-9.]*\).*/冷启动(穿透到DB) mean=\1ms/'
+}
+
 echo "=================================================="
 echo " 项目 A 性能压测  BASE=$BASE"
 echo " 时间: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -85,15 +104,19 @@ done
 "$NODE" bench/bench.js --url "$BASE" --path /api/health \
   --concurrency 50 --requests 3000 --warmup 100 --label "基线 /api/health（无 DB，测框架开销）"
 
-# ---------- 2. 读路径：会话列表（分页 + 计数，走 DB） ----------
+# ---------- 2. 读路径：会话列表（分页 + 计数） ----------
+flush_response_cache
+cold_latency "/api/interview/sessions?page=1&size=10" "列表冷启动"
 "$NODE" bench/bench.js --url "$BASE" --path "/api/interview/sessions?page=1&size=10" \
   --token "$TOKEN" --concurrency 50 --requests 2000 --warmup 100 \
-  --label "会话列表 /sessions（分页 + 题目数/已答数）"
+  --label "会话列表 /sessions（并发 50，缓存命中）"
 
 # ---------- 3. 读路径：会话详情（多表聚合，最重的读） ----------
+flush_response_cache
+cold_latency "/api/interview/sessions/$SID" "详情冷启动"
 "$NODE" bench/bench.js --url "$BASE" --path "/api/interview/sessions/$SID" \
   --token "$TOKEN" --concurrency 50 --requests 1000 --warmup 50 \
-  --label "会话详情 /sessions/{id}（会话+题目+回答+反馈）"
+  --label "会话详情 /sessions/{id}（并发 50，缓存命中）"
 
 # ---------- 4. 限流：令牌桶容量 10/天，超出的应被 429 拦截 ----------
 echo ""

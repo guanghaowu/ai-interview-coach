@@ -8,6 +8,7 @@ import com.aicoach.dto.FeedbackDTO;
 import com.aicoach.entity.Answer;
 import com.aicoach.mapper.AnswerMapper;
 import com.aicoach.service.FeedbackService;
+import com.aicoach.service.ResponseCacheService;
 import com.aicoach.service.SessionMemoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +37,7 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
     private final AnswerMapper answerMapper;
     private final FeedbackService feedbackService;
     private final SessionMemoryService sessionMemoryService;
+    private final ResponseCacheService responseCacheService;
 
     @Override
     public void onMessage(AnswerMessage msg) {
@@ -70,6 +72,12 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
             // 落库反馈 + 回填回答：交给 FeedbackService 在短事务里原子完成。
             // 注意事务边界——AI 调用在上面已经结束，不会被包进事务。
             feedbackService.saveGradingResult(answer, fb);
+
+            // 评分结果改变了会话详情（分数 + pros/cons/suggestions），必须失效缓存。
+            // 注意：这里跑在 MQ 消费线程里，没有请求上下文，
+            // 所以 userId 只能从消息体取，不能用 ThreadLocal。
+            responseCacheService.evictSessionDetail(msg.getUserId(), msg.getSessionId());
+            responseCacheService.evictSessionList(msg.getUserId());
 
             // AI 反馈写入会话记忆
             sessionMemoryService.append(msg.getSessionId(), "assistant", JSONUtil.toJsonStr(fb));

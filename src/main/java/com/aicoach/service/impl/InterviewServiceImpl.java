@@ -3,6 +3,7 @@ package com.aicoach.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.crypto.digest.DigestUtil;
 import com.aicoach.common.BusinessException;
+import com.aicoach.common.CacheKeys;
 import com.aicoach.common.ThreadLocalUtil;
 import com.aicoach.constant.AnswerStatus;
 import com.aicoach.constant.SessionStatus;
@@ -28,12 +29,14 @@ import com.aicoach.mq.InterviewProducer;
 import com.aicoach.service.AnswerService;
 import com.aicoach.service.InterviewService;
 import com.aicoach.service.QuestionService;
+import com.aicoach.service.ResponseCacheService;
 import com.aicoach.service.SessionMemoryService;
 import com.aicoach.service.SessionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -65,6 +68,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final SessionService sessionService;
     private final SessionMemoryService sessionMemoryService;
     private final InterviewProducer interviewProducer;
+    private final ResponseCacheService responseCacheService;
 
     @Override
     public SessionVO createSession(CreateSessionDTO dto) {
@@ -83,6 +87,8 @@ public class InterviewServiceImpl implements InterviewService {
         if (cached != null && questionService.countBySession(cached.getId()) > 0) {
             InterviewSession session = sessionService.reuseFromHistory(
                     userId, jdMd5, dto.getJdContent(), cached.getId());
+            // 列表新增了一条会话 → 失效该用户的列表缓存
+            responseCacheService.evictSessionList(userId);
             return buildSessionVO(session, questionService.listBySession(session.getId()));
         }
 
@@ -93,6 +99,8 @@ public class InterviewServiceImpl implements InterviewService {
         dispatchGenerateTask(session, userId, jdMd5, dto.getJdContent());
 
         // 4. 立即返回；前端轮询 GET /api/interview/{sessionId} 取结果
+        //    列表多了一条「出题中」的会话 → 失效该用户的列表缓存
+        responseCacheService.evictSessionList(userId);
         return buildSessionVO(session, List.of());
     }
 
@@ -103,7 +111,15 @@ public class InterviewServiceImpl implements InterviewService {
         return buildSessionVO(session, questionService.listBySession(sessionId));
     }
 
+    /**
+     * 我的会话列表（分页）。
+     *
+     * 缓存 key 含 userId —— 否则不同用户的第 1 页会互相串数据（越权）。
+     * 写入侧由 {@link ResponseCacheService#evictSessionList(Long)} 按用户精准失效。
+     */
     @Override
+    @Cacheable(value = CacheKeys.SESSION_LIST,
+            key = "T(com.aicoach.common.CacheKeys).sessionListFor(#page, #size)")
     public PageResultVO<SessionListItemVO> listSessions(int page, int size) {
         Long userId = requireLogin();
 
@@ -139,7 +155,19 @@ public class InterviewServiceImpl implements InterviewService {
         return PageResultVO.of(result.getTotal(), result.getCurrent(), result.getSize(), items);
     }
 
+    /**
+     * 会话完整详情：题目 + 每题最新回答 + 评分反馈。
+     *
+     * 这是全项目最重的读（会话 + 题目 + 回答 + 反馈四张表聚合），也是缓存收益最大的地方。
+     *
+     * <b>unless 只缓存「出题完成」的会话</b>：出题中的会话题目还没落库，
+     * 若被缓存住，等题目生成完前端还是看到空列表。用 unless（方法返回后判断）
+     * 而不是 condition（方法执行前判断）——因为要判断的正是返回值里的 status。
+     */
     @Override
+    @Cacheable(value = CacheKeys.SESSION_DETAIL,
+            key = "T(com.aicoach.common.CacheKeys).sessionDetailFor(#sessionId)",
+            unless = "#result == null || #result.status != T(com.aicoach.constant.SessionStatus).DONE.getCode()")
     public SessionDetailVO getSessionDetail(Long sessionId) {
         Long userId = requireLogin();
         InterviewSession session = requireOwnedSession(sessionId, userId);
@@ -235,7 +263,13 @@ public class InterviewServiceImpl implements InterviewService {
         answer.setStatus(AnswerStatus.PENDING.getCode());
         answerMapper.insert(answer);
 
-        // 6. 投递 MQ，AI 评分交给消费端执行。
+        // 6. 失效缓存：详情里多了一条「待评分」的回答，列表的已答数也会变。
+        //    放在 insert 之后、投递 MQ 之前 —— 这样即使 MQ 投递抛异常导致请求失败，
+        //    回答数据也已经落库，缓存不会残留旧的「未作答」状态。
+        responseCacheService.evictSessionDetail(userId, session.getId());
+        responseCacheService.evictSessionList(userId);
+
+        // 7. 投递 MQ，AI 评分交给消费端执行。
         //    不能同步调：AI 评分耗时 5-15 秒，会长时间占用 HTTP 线程，
         //    并发上来会耗尽 Tomcat 线程池，连累登录、查题等所有接口。
         interviewProducer.sendAnswerTask(new AnswerMessage(
@@ -244,7 +278,7 @@ public class InterviewServiceImpl implements InterviewService {
 
         log.info("回答已提交（AI 异步评分中）: answerId={}", answer.getId());
 
-        // 7. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
+        // 8. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
         AnswerResultVO vo = new AnswerResultVO();
         vo.setAnswerId(answer.getId());
         vo.setStatus(AnswerStatus.PENDING.getCode());
