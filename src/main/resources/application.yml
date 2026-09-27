@@ -26,6 +26,21 @@ mybatis-plus:
       logic-not-delete-value: 0
   mapper-locations: classpath:mapper/*.xml
 
+# ===== 接口文档（Knife4j / OpenAPI3）=====
+# 访问 http://localhost:8080/doc.html ；/v3/api-docs 是 OpenAPI 规范 JSON
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+
 logging:
   level:
     com.aicoach: debug

@@ -32,6 +32,7 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 | 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试） |
 | 大模型 | LangChain4j 0.36.2 + DeepSeek（OpenAI 兼容协议） |
 | 安全 | JWT（JJWT 0.12.5）+ BCrypt 密码加密 |
+| 接口文档 | Knife4j 4.5.0（OpenAPI3 / springdoc 2.3.0） |
 | 部署 | Docker 多阶段构建 + Docker Compose |
 | 工具 | Hutool、Lombok |
 
@@ -78,7 +79,7 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | AI 评分 | 提交回答 → 1-10 分 + 优点 / 缺点 / 改进建议 |
 | 会话记忆 | Redis 存对话历史（TTL 24h，保留最近 20 条） |
 | 使用配额 | 每用户每天 10 次 AI 调用（Redis 令牌桶） |
-| 结果复用 | 相同 JD 复用已生成的题目，节省 Token |
+| 结果复用 | **同一用户**提交相同 JD 时复用其历史题目，节省 Token（按 userId 隔离，不会串到他人） |
 
 ---
 
@@ -89,12 +90,22 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | POST | `/api/user/register` | 否 | 注册，返回 JWT |
 | POST | `/api/user/login` | 否 | 登录，返回 JWT |
 | GET | `/api/user/info` | 是 | 当前用户信息 |
-| POST | `/api/interview/create` | 是 | 创建会话（AI 异步出题） |
-| GET | `/api/interview/{sessionId}` | 是 | 会话详情（含题目） |
-| POST | `/api/interview/answer` | 是 | 提交回答（AI 评分） |
+| POST | `/api/interview/create` | 是 | 创建会话（AI 异步出题，限流 10 次/天） |
+| GET | `/api/interview/{sessionId}` | 是 | 会话详情（含题目），轮询出题结果 |
+| POST | `/api/interview/answer` | 是 | 提交回答（AI 异步评分，限流 10 次/天） |
+| GET | `/api/interview/answer/{answerId}` | 是 | 轮询评分结果 |
 | GET | `/api/health` | 否 | 健康检查 |
 
 **会话状态**：`0` = AI 出题中 ｜ `1` = 已完成 ｜ `2` = 失败
+**回答状态**：`0` = 待评分 ｜ `1` = 已评分 ｜ `2` = 评分失败
+
+> 两个 AI 接口都是「提交即返回 + 前端轮询」的异步模型：
+> 提交只拿到 id 和 `status=0`，真正的结果靠轮询接口取。
+
+### 在线接口文档
+
+启动后访问 **http://localhost:8080/doc.html**（Knife4j）。
+点右上角「Authorize」填入登录返回的 token，即可直接调试需要鉴权的接口，无需手写 curl。
 
 ### 调用示例
 
@@ -168,7 +179,12 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 
 ### 2. 指数退避重试 + 幂等去重
 三方 API 存在网络抖动。失败后按 **1s → 2s → 4s** 退避重试（最多 3 次）；
-同时用 `ai_call_log` 表以 `(userId, jdMd5)` 为唯一键做幂等，避免 MQ 重投导致重复出题。
+同时用 `ai_call_log` 表以 `(userId, jdMd5)` 为唯一键做幂等（**按用户维度**，不会串到他人），
+避免 MQ 重投导致重复出题。
+
+> 踩坑记录：幂等标记的 insert 必须捕获唯一键冲突。否则并发/重投时异常会冒到外层 catch，
+> 把「已经出题成功」的会话无条件改判成「失败」，前端能看到状态从 1 抖到 2。
+> 同理，失败兜底逻辑要先判断当前是否已是完成态，不能无脑覆盖。
 
 ### 3. Redis 令牌桶限流（Lua 原子执行）
 每用户每天 10 次 AI 调用配额，用 Lua 脚本保证「取令牌 + 回写」的原子性。
@@ -188,6 +204,17 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 构建阶段用 Maven 镜像编译，运行阶段只保留 JRE（alpine），显著减小镜像体积；
 `COPY pom.xml` 单独下载依赖以利用 Docker 层缓存。
 
+### 7. 事务边界设计
+- `createSession` 用 `@Transactional` 把「会话落库 + MQ 投递」绑成一个原子操作，投递失败即回滚，
+  不会留下永远停在 `status=0` 的僵尸会话；
+- 评分落库则相反：AI 调用耗时 5-15 秒，**绝不能放进事务**，否则一个请求就要占着数据库连接 15 秒，
+  连接池（max-active=20）并发 20 就爆。所以单独抽出 `FeedbackService.saveGradingResult`，
+  事务只包住「插 feedback + 回填 answer」两条写操作，外部调用留在事务外。
+
+### 8. Knife4j 在线接口文档
+集成 OpenAPI3（springdoc），`/doc.html` 可视化调试，全局配置 JWT 认证方案，
+点一下 Authorize 就能带 token 调接口，省去手写 curl。
+
 ---
 
 ## 八、项目结构
@@ -196,7 +223,8 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 src/main/java/com/aicoach/
 ├── ai/              # LangChain4j 服务接口 + Function Calling 工具
 ├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
-├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j 配置
+├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j / Knife4j 配置
+├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
 ├── controller/      # 接口层
 ├── dto/             # 入参 DTO / 出参 VO
 ├── entity/          # 数据库实体

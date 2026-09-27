@@ -24,6 +24,7 @@
         <jjwt.version>0.12.5</jjwt.version>
         <hutool.version>5.8.27</hutool.version>
         <rocketmq.version>2.3.1</rocketmq.version>
+        <knife4j.version>4.5.0</knife4j.version>
     </properties>
 
     <dependencies>
@@ -122,6 +123,13 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+        <!-- 接口文档：Knife4j（基于 OpenAPI3 / springdoc 2.3.0，访问 /doc.html） -->
+        <dependency>
+            <groupId>com.github.xiaoymin</groupId>
+            <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
+            <version>${knife4j.version}</version>
         </dependency>
 
         <!-- Lombok -->
