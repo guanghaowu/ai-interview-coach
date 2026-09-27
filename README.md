@@ -75,7 +75,8 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | 功能 | 说明 |
 |---|---|
 | 用户体系 | 注册 / 登录 / JWT 鉴权 / BCrypt 密码加密 |
-| AI 出题 | 提交 JD → 生成 3-5 道题（题型混合：八股 / 场景 / 编程 / 项目） |
+| **AgentLoop 出题** | Planner 拆考察维度 → Executor 按维度出题 → Critic 审核 → 不合格定向修订（最多两轮） |
+| AI 出题 | 提交 JD → 生成 5 道题（题型混合：八股 / 场景 / 编程 / 项目），每题带考察维度 |
 | AI 评分 | 提交回答 → 1-10 分 + 优点 / 缺点 / 改进建议 |
 | 会话记忆 | Redis 存对话历史（TTL 24h，保留最近 20 条） |
 | 使用配额 | 每用户每天 10 次 AI 调用（Redis 令牌桶） |
@@ -188,11 +189,42 @@ SERVER_PORT=8080 ./mvnw spring-boot:run -Dmaven.test.skip=true
 
 ## 七、技术亮点
 
-### 1. RocketMQ 异步化，主接口秒级返回
+### 1. AgentLoop 三角色编排出题（Planner → Executor → Critic）
+出题不是「一次模型调用直接要 5 道题」，而是一个带闭环校验的 Agent。原因很直接：
+单次调用时模型很容易把几道题挤在同一个技术点上（比如全是 Redis），JD 里的其他技术点
+没人问，而且题目质量完全依赖那一次输出的运气，没有任何复核。
+
+| 角色 | 职责 |
+|---|---|
+| **Planner** | 读 JD → 拆出 3-5 个考察维度（维度名 + 题量 + 考察重点），各维度题量之和为 5 |
+| **Executor** | 按考察计划出题，每道题标注所属维度（`dimension` 字段） |
+| **Critic** | 审核覆盖度 / 是否重复 / 是否空泛 / 难度分布；不通过则**带着具体问题定向修订**，最多两轮 |
+
+**为什么最多两轮**：每一轮都是真实的模型调用（Token + 10-30 秒延迟），轮次无上限意味着
+延迟与成本都不可控，而收益递减——第一轮修订通常已解决主要问题。用硬上限把最坏情况钉死：
+最坏 2 次 Executor + 1 次 Planner + 1 次 Critic。
+
+**降级策略（这部分比正常路径更重要）**：
+
+| 环节失败 | 处理 | 理由 |
+|---|---|---|
+| Planner 失败 | 传空计划继续，让 Executor 自行均衡覆盖 | 规划是锦上添花，不该成为出题的硬依赖 |
+| Critic 失败 / 超时 | **视为通过（fail-open）** | 审核是质量增强，不是正确性依赖；不能拿可用性换非必需的东西 |
+| Executor 失败 | 抛出，交给 MQ 重试 | 这是真正的失败 |
+| 修订返回空 | 保留上一版题目 | 第二轮改坏了不能把第一轮的成果也丢掉 |
+
+**可观测性**：`interview_session.agent_rounds` 记录实际执行轮数
+（0=复用历史题目 / 1=首轮通过 / 2=修订过一次），`question.dimension` 记录考察维度。
+出题过程因此是可解释的——前端能按维度分组展示，也能回答「这次 Agent 跑了几轮、为什么改题」。
+
+> 踩坑记录：`CritiqueDTO.passed` 必须用包装类型 `Boolean`。用基本类型 `boolean` 时，
+> 模型漏返回该字段会被反序列化成 `false`，导致本来合格的题目被反复重出、白烧两轮 Token。
+
+### 2. RocketMQ 异步化，主接口秒级返回
 AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍高就阻塞整个服务。
 改为「建会话 + 投 MQ」后主接口立即返回，AI 调用在消费端执行，前端轮询取结果。
 
-### 2. 指数退避重试 + 幂等去重
+### 3. 指数退避重试 + 幂等去重
 三方 API 存在网络抖动。失败后按 **1s → 2s → 4s** 退避重试（最多 3 次）；
 同时用 `ai_call_log` 表以 `(userId, jdMd5)` 为唯一键做幂等（**按用户维度**，不会串到他人），
 避免 MQ 重投导致重复出题。
@@ -201,25 +233,25 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 > 把「已经出题成功」的会话无条件改判成「失败」，前端能看到状态从 1 抖到 2。
 > 同理，失败兜底逻辑要先判断当前是否已是完成态，不能无脑覆盖。
 
-### 3. Redis 令牌桶限流（Lua 原子执行）
+### 4. Redis 令牌桶限流（Lua 原子执行）
 每用户每天 10 次 AI 调用配额，用 Lua 脚本保证「取令牌 + 回写」的原子性。
 
 > 踩坑记录：速率计算必须用 `double`。若用 `long`，`10/86400` 取整为 `0`、被兜底成 `1`，
 > 会导致补充速率大于消耗速率，**限流彻底失效**。
 
-### 4. Function Calling 获取真实上下文
+### 5. Function Calling 获取真实上下文
 通过 LangChain4j `@Tool` 暴露两个工具（查询会话题目、查询题目原文），
 让模型评分时能主动调用工具获取上下文，而不是凭空编造。
 
-### 5. Redis 会话记忆
+### 6. Redis 会话记忆
 用 Redis List 存对话历史（`interview:memory:{sessionId}`），TTL 24h，自动 trim 到最近 20 条，
 支持多轮追问场景。
 
-### 6. Docker 多阶段构建
+### 7. Docker 多阶段构建
 构建阶段用 Maven 镜像编译，运行阶段只保留 JRE（alpine），显著减小镜像体积；
 `COPY pom.xml` 单独下载依赖以利用 Docker 层缓存。
 
-### 7. 事务边界设计
+### 8. 事务边界设计
 事务全部收在 `SessionService` / `FeedbackService` 两个独立 Bean 里；编排层
 （`InterviewServiceImpl`）**刻意不加 `@Transactional`** —— 既避免 private 方法自调用
 导致注解静默失效，也让每个方法的事务语义一目了然。三条原则：
@@ -233,11 +265,11 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
   消费端按 READ_COMMITTED 读不到会话行，于是题目写进去了、会话却永远停在「出题中」。
   投递失败时走补偿——把会话置为失败终态，而不是留下僵尸会话。
 
-### 8. Knife4j 在线接口文档
+### 9. Knife4j 在线接口文档
 集成 OpenAPI3（springdoc），`/doc.html` 可视化调试，全局配置 JWT 认证方案，
 点一下 Authorize 就能带 token 调接口，省去手写 curl。
 
-### 9. 列表接口避免 N+1
+### 10. 列表接口避免 N+1
 会话列表要展示每条的题目数与已答数。直觉写法是「查一页会话 → 逐条 count」，那是 1+N 次查询；
 这里改成「一次 IN 查询 + 内存分组」，整页固定 2 次查询。一页最多 20 条会话、每条几道题，
 数据量完全可控——用极小的内存代价换掉 N 次数据库往返。
@@ -248,7 +280,7 @@ AI 出题耗时 10-30 秒。同步调用会占满 Tomcat 线程池，并发稍�
 
 ```
 src/main/java/com/aicoach/
-├── ai/              # LangChain4j 服务接口 + Function Calling 工具
+├── ai/              # LangChain4j 服务接口 + AgentLoop 编排器 + Function Calling 工具
 ├── common/          # Result / 异常 / JWT / 限流切面 / 重试工具
 ├── config/          # MyBatis-Plus / WebMvc / Redis / LangChain4j / Knife4j 配置
 ├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
@@ -271,6 +303,12 @@ src/main/java/com/aicoach/
 - `interview_session(user_id, created_at DESC)` —— 用户会话列表
 - `interview_session(jd_md5)` —— JD 复用查询
 - `ai_call_log(user_id, call_md5)` 唯一索引 —— 幂等去重
+
+AgentLoop 相关字段：
+- `question.dimension` —— 考察维度（Planner 拆解），用于分组展示与覆盖度校验
+- `interview_session.agent_rounds` —— 实际出题轮数（0=复用历史 / 1=首轮通过 / 2=修订过一次）
+
+> 已建库升级：执行 `src/main/resources/sql/migration-20260927-agentloop.sql`（不可重复执行）。
 
 ---
 

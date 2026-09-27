@@ -1,9 +1,8 @@
 package com.aicoach.mq;
 
-import com.aicoach.ai.InterviewAiService;
-import com.aicoach.common.RetryUtil;
+import com.aicoach.ai.AgentResult;
+import com.aicoach.ai.InterviewAgentLoop;
 import com.aicoach.constant.SessionStatus;
-import com.aicoach.dto.QuestionListDTO;
 import com.aicoach.entity.AiCallLog;
 import com.aicoach.entity.InterviewSession;
 import com.aicoach.mapper.AiCallLogMapper;
@@ -22,7 +21,7 @@ import org.springframework.stereotype.Component;
  * 出题任务消费者
  *
  * 异步执行 AI 出题，带：
- * - 指数退避重试（应对三方 API 抖动）
+ * - AgentLoop 三角色闭环（Planner / Executor / Critic），见 {@link InterviewAgentLoop}
  * - 幂等去重（ai_call_log 唯一键）
  *
  * 状态变更一律走 {@link SessionService}：它带事务，并内置「已完成不允许改判为失败」的守卫。
@@ -40,7 +39,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
     /** ai_call_log.status 取值：1=成功 0=失败（与会话/回答的状态语义无关） */
     private static final int CALL_SUCCESS = 1;
 
-    private final InterviewAiService interviewAiService;
+    private final InterviewAgentLoop agentLoop;
     private final InterviewSessionMapper sessionMapper;
     private final AiCallLogMapper aiCallLogMapper;
     private final QuestionService questionService;
@@ -65,25 +64,20 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
                 return;
             }
 
-            // 2. 调 AI 出题（指数退避重试：1s / 2s / 4s）
-            QuestionListDTO result = RetryUtil.retryWithBackoff(
-                    "AI出题", 3, 1000,
-                    () -> interviewAiService.generateQuestions(msg.getJdContent()));
+            // 2. 跑 AgentLoop 出题：Planner 拆维度 → Executor 出题 → Critic 审核 →
+            //    不合格则定向修订（最多两轮）。每次模型调用的重试、降级策略都在 AgentLoop 内部。
+            AgentResult result = agentLoop.run(msg.getJdContent());
 
-            if (result == null || result.getQuestions() == null || result.getQuestions().isEmpty()) {
-                throw new IllegalStateException("AI 返回题目为空");
-            }
+            // 3. 落库题目 + 置完成 + 记录 Agent 轮数（同一事务，避免「题目不全却已完成」）
+            int saved = sessionService.saveQuestionsAndMarkDone(
+                    msg.getSessionId(), result.questions(), result.rounds());
 
-            // 3. 落库题目（QuestionService 内部会归一化题型/难度，并统一编号）
-            int saved = questionService.saveGenerated(msg.getSessionId(), result.getQuestions());
-
-            // 4. 更新会话状态为「已完成」
-            sessionService.updateStatus(msg.getSessionId(), SessionStatus.DONE);
-
-            // 5. 记录幂等标记
+            // 4. 记录幂等标记
             markProcessed(msg);
 
-            log.info("出题完成: sessionId={}, 题目数={}", msg.getSessionId(), saved);
+            log.info("出题完成: sessionId={}, 题目数={}, agent轮数={}, 计划={}",
+                    msg.getSessionId(), saved, result.rounds(),
+                    InterviewAgentLoop.describePlan(result.plan()));
 
         } catch (Exception e) {
             log.error("出题失败: sessionId={}", msg.getSessionId(), e);
@@ -157,7 +151,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         AiCallLog logEntity = new AiCallLog();
         logEntity.setUserId(msg.getUserId());
         logEntity.setCallMd5(msg.getJdMd5());
-        logEntity.setToolName("generateQuestions");
+        logEntity.setToolName("agentLoop.generateQuestions");
         logEntity.setStatus(CALL_SUCCESS);
         try {
             aiCallLogMapper.insert(logEntity);

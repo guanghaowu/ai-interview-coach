@@ -199,6 +199,17 @@ QCOUNT=$(echo "$R" | jlen "data.questions")
 if [ "$QCOUNT" -ge 3 ]; then ok "生成题目数 = $QCOUNT"; else bad "题目数过少: $QCOUNT"; fi
 QID=$(echo "$R" | jget "data.questions.0.id")
 
+# AgentLoop 专属断言：考察维度 + 执行轮数
+DIM=$(echo "$R" | jget "data.questions.0.dimension")
+if [ -n "$DIM" ]; then ok "首题考察维度 = $DIM"; else bad "首题 dimension 为空（Planner 未生效）"; fi
+DIMN=0
+for i in $(seq 0 $((QCOUNT - 1))); do
+  [ -n "$(echo "$R" | jget "data.questions.$i.dimension")" ] && DIMN=$((DIMN + 1))
+done
+if [ "$DIMN" = "$QCOUNT" ]; then ok "全部 $QCOUNT 道题都带考察维度"; else bad "仅 $DIMN/$QCOUNT 道题有维度"; fi
+ROUNDS=$(echo "$R" | jget data.agentRounds)
+if [ "$ROUNDS" = "1" ] || [ "$ROUNDS" = "2" ]; then ok "AgentLoop 执行轮数 = $ROUNDS"; else bad "agentRounds 异常: [$ROUNDS]"; fi
+
 # ---------- 10. 会话列表 ----------
 echo ""
 echo "[10] GET /api/interview/sessions（新接口，分页）"
@@ -254,6 +265,8 @@ R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions/$SID")
 check "detail.answeredCount 更新为 1" "$(echo "$R" | jget data.answeredCount)" "1"
 check "首题 answerStatus" "$(echo "$R" | jget data.items.0.answerStatus)" "1"
 check "首题 score 已回填" "$(echo "$R" | jget data.items.0.score)" "$SCORE"
+check "详情首题考察维度已持久化" "$(echo "$R" | jget data.items.0.dimension)" "$DIM"
+check "详情 agentRounds 已持久化" "$(echo "$R" | jget data.agentRounds)" "$ROUNDS"
 R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions?page=1&size=10")
 check "列表 answeredCount 更新为 1" "$(echo "$R" | jget data.records.0.answeredCount)" "1"
 

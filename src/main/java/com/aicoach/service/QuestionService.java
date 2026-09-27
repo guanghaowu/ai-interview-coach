@@ -68,9 +68,10 @@ public class QuestionService {
     /**
      * 落库 AI 生成的题目。
      *
-     * 这里顺手做了两件防御：
+     * 这里顺手做了三件防御：
      * 1. 题型/难度归一化——大模型结构化输出可能返回 null 或越界值，不能让脏数据进库；
-     * 2. 序号由服务端统一编号，不信任模型返回的顺序。
+     * 2. 序号由服务端统一编号，不信任模型返回的顺序；
+     * 3. dimension 长度截断——模型偶尔会把一句话当维度名，超长会撑爆列宽。
      *
      * @return 落库条数
      */
@@ -82,10 +83,20 @@ public class QuestionService {
             entity.setType(QuestionType.normalize(dto.getType()));
             entity.setContent(dto.getContent());
             entity.setDifficulty(Difficulty.normalize(dto.getDifficulty()));
+            entity.setDimension(truncateDimension(dto.getDimension()));
             entity.setSortOrder(order++);
             questionMapper.insert(entity);
         }
         return items.size();
+    }
+
+    /** 维度名截断到列宽（VARCHAR(50)）以内，避免超长导致插入失败 */
+    private String truncateDimension(String dimension) {
+        if (dimension == null) {
+            return null;
+        }
+        String trimmed = dimension.trim();
+        return trimmed.length() <= 50 ? trimmed : trimmed.substring(0, 50);
     }
 
     /**
@@ -103,6 +114,7 @@ public class QuestionService {
             copy.setType(src.getType());
             copy.setContent(src.getContent());
             copy.setDifficulty(src.getDifficulty());
+            copy.setDimension(src.getDimension());
             copy.setSortOrder(src.getSortOrder());
             questionMapper.insert(copy);
             copies.add(copy);

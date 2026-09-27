@@ -1,6 +1,7 @@
 package com.aicoach.service;
 
 import com.aicoach.constant.SessionStatus;
+import com.aicoach.dto.QuestionDTO;
 import com.aicoach.entity.InterviewSession;
 import com.aicoach.mapper.InterviewSessionMapper;
 import lombok.RequiredArgsConstructor;
@@ -8,6 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 /**
  * 会话生命周期服务
@@ -75,10 +78,35 @@ public class SessionService {
         InterviewSession target = sessionMapper.selectById(targetSessionId);
         if (target != null) {
             target.setStatus(SessionStatus.DONE.getCode());
+            // 复用历史题目没跑过 AgentLoop，轮数记 0（语义：非 Agent 产出）
+            target.setAgentRounds(0);
             sessionMapper.updateById(target);
         }
         log.info("幂等复用完成: targetSessionId={}, 复用 {} 道题", targetSessionId, copied);
         return copied;
+    }
+
+    /**
+     * AgentLoop 出题成功后落库：写题目 + 置为完成 + 记录执行轮数。
+     *
+     * 与 {@link #copyQuestionsAndMarkDone} 同理，「题目」与「会话状态」必须同一事务：
+     * 否则中途失败会留下「题目不全却已完成」的会话。
+     *
+     * @param agentRounds AgentLoop 实际执行轮数，落库后可用于展示「Agent 跑了几轮」
+     * @return 落库题目数
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int saveQuestionsAndMarkDone(Long sessionId, List<QuestionDTO> questions, int agentRounds) {
+        int saved = questionService.saveGenerated(sessionId, questions);
+
+        InterviewSession session = sessionMapper.selectById(sessionId);
+        if (session != null) {
+            session.setStatus(SessionStatus.DONE.getCode());
+            session.setAgentRounds(agentRounds);
+            sessionMapper.updateById(session);
+        }
+        log.info("出题落库完成: sessionId={}, 题目数={}, agent 轮数={}", sessionId, saved, agentRounds);
+        return saved;
     }
 
     /**

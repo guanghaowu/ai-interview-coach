@@ -18,5 +18,8 @@ public class QuestionVO {
     /** 1=易 2=中 3=难 */
     private Integer difficulty;
 
+    /** 考察维度（Planner 拆解），前端可按此分组 */
+    private String dimension;
+
     private Integer sortOrder;
 }

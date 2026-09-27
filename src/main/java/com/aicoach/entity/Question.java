@@ -35,6 +35,9 @@ public class Question implements Serializable {
     /** 1=易 2=中 3=难 */
     private Integer difficulty;
 
+    /** 考察维度（Planner 拆出的维度名，用于前端分组与覆盖度校验） */
+    private String dimension;
+
     /** 题目序号 */
     private Integer sortOrder;
 

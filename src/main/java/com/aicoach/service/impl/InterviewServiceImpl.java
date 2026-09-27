@@ -168,6 +168,7 @@ public class InterviewServiceImpl implements InterviewService {
             vo.setType(q.getType());
             vo.setContent(q.getContent());
             vo.setDifficulty(q.getDifficulty());
+            vo.setDimension(q.getDimension());
             vo.setSortOrder(q.getSortOrder());
 
             Answer a = latestAnswerByQuestion.get(q.getId());
@@ -194,6 +195,7 @@ public class InterviewServiceImpl implements InterviewService {
         detail.setPosition(session.getPosition());
         detail.setTechStack(session.getTechStack());
         detail.setStatus(session.getStatus());
+        detail.setAgentRounds(session.getAgentRounds());
         detail.setCreatedAt(session.getCreatedAt());
         detail.setQuestionCount(questions.size());
         detail.setAnsweredCount(answered);
@@ -323,6 +325,7 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setPosition(session.getPosition());
         vo.setTechStack(session.getTechStack());
         vo.setStatus(session.getStatus());
+        vo.setAgentRounds(session.getAgentRounds());
         vo.setCreatedAt(session.getCreatedAt());
 
         List<QuestionVO> qvos = new ArrayList<>();

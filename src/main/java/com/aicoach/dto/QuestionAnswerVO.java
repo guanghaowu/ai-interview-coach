@@ -20,6 +20,9 @@ public class QuestionAnswerVO {
     /** 1=易 2=中 3=难 */
     private Integer difficulty;
 
+    /** 考察维度（Planner 拆解），前端可按此分组 */
+    private String dimension;
+
     private Integer sortOrder;
 
     // ===== 以下为回答与反馈，未作答时全为 null =====

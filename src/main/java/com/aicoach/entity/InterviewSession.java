@@ -41,6 +41,9 @@ public class InterviewSession implements Serializable {
     /** 0=AI 出题中 1=已完成 2=失败（语义以 constant.SessionStatus 为准） */
     private Integer status;
 
+    /** AgentLoop 实际执行的出题轮数（1=首轮通过，2=触发过一次定向修订，0=未跑或降级） */
+    private Integer agentRounds;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

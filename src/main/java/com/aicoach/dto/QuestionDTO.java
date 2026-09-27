@@ -16,4 +16,7 @@ public class QuestionDTO {
 
     /** 1=易 2=中 3=难 */
     private Integer difficulty;
+
+    /** 考察维度（对应 Planner 拆出的维度名，用于前端分组展示与覆盖度校验） */
+    private String dimension;
 }
