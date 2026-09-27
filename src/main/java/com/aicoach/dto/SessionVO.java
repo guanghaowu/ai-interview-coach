@@ -17,7 +17,7 @@ public class SessionVO {
 
     private String techStack;
 
-    /** 1=进行中 2=已结束 */
+    /** 0=AI 出题中 1=已完成 2=失败 */
     private Integer status;
 
     private LocalDateTime createdAt;

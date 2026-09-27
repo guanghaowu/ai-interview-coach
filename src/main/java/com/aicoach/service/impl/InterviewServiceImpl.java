@@ -2,14 +2,17 @@ package com.aicoach.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.crypto.digest.DigestUtil;
-import com.aicoach.ai.InterviewAiService;
 import com.aicoach.common.BusinessException;
 import com.aicoach.common.ThreadLocalUtil;
 import com.aicoach.constant.AnswerStatus;
 import com.aicoach.constant.SessionStatus;
 import com.aicoach.dto.AnswerResultVO;
 import com.aicoach.dto.CreateSessionDTO;
+import com.aicoach.dto.PageResultVO;
+import com.aicoach.dto.QuestionAnswerVO;
 import com.aicoach.dto.QuestionVO;
+import com.aicoach.dto.SessionDetailVO;
+import com.aicoach.dto.SessionListItemVO;
 import com.aicoach.dto.SessionVO;
 import com.aicoach.dto.SubmitAnswerDTO;
 import com.aicoach.entity.Answer;
@@ -22,42 +25,50 @@ import com.aicoach.mapper.InterviewSessionMapper;
 import com.aicoach.mq.AnswerMessage;
 import com.aicoach.mq.InterviewMessage;
 import com.aicoach.mq.InterviewProducer;
+import com.aicoach.service.AnswerService;
 import com.aicoach.service.InterviewService;
 import com.aicoach.service.QuestionService;
 import com.aicoach.service.SessionMemoryService;
+import com.aicoach.service.SessionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 模拟面试服务实现
+ *
+ * 事务边界说明：本类**刻意不加 @Transactional**。
+ * 所有需要事务的写操作都收在 {@link SessionService} / {@link com.aicoach.service.FeedbackService}
+ * 这些独立 Bean 里，避免 private 方法自调用导致 @Transactional 静默失效。
+ * 本类只负责编排：读数据 → 调 MQ → 拼 VO。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class InterviewServiceImpl implements InterviewService {
 
-    private final InterviewAiService interviewAiService;
     private final InterviewSessionMapper sessionMapper;
     private final AnswerMapper answerMapper;
     private final FeedbackMapper feedbackMapper;
     private final QuestionService questionService;
+    private final AnswerService answerService;
+    private final SessionService sessionService;
     private final SessionMemoryService sessionMemoryService;
     private final InterviewProducer interviewProducer;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public SessionVO createSession(CreateSessionDTO dto) {
-        Long userId = ThreadLocalUtil.get();
-        if (userId == null) {
-            throw new BusinessException(401, "未登录");
-        }
-
+        Long userId = requireLogin();
         String jdMd5 = DigestUtil.md5Hex(dto.getJdContent());
 
         // 1. 命中缓存：本人已有相同 JD 的已完成会话 → 复用题目，不再调 AI（省 Token）
@@ -70,21 +81,16 @@ public class InterviewServiceImpl implements InterviewService {
                         .orderByDesc(InterviewSession::getId)
                         .last("LIMIT 1"));
         if (cached != null && questionService.countBySession(cached.getId()) > 0) {
-            return reuseQuestions(userId, dto, jdMd5, cached.getId());
+            InterviewSession session = sessionService.reuseFromHistory(
+                    userId, jdMd5, dto.getJdContent(), cached.getId());
+            return buildSessionVO(session, questionService.listBySession(session.getId()));
         }
 
-        // 2. 未命中：先创建会话（status=0 表示「AI 出题中」），主接口不阻塞。
-        //    整个方法带 @Transactional：会话落库与 MQ 投递是一个原子操作，
-        //    投递失败就回滚，不会留下永远停在 status=0 的僵尸会话。
-        InterviewSession session = newSession(userId, jdMd5, dto.getJdContent(),
-                SessionStatus.GENERATING, "解析中", "解析中");
-        sessionMapper.insert(session);
+        // 2. 新建会话（独立事务，方法返回时已提交）
+        InterviewSession session = sessionService.createPending(userId, jdMd5, dto.getJdContent());
 
-        // 3. 投递 MQ 异步任务，AI 出题在 Consumer 侧执行
-        interviewProducer.sendGenerateTask(
-                new InterviewMessage(session.getId(), userId, dto.getJdContent(), jdMd5));
-
-        log.info("会话创建成功（AI 异步出题中）: sessionId={}, userId={}", session.getId(), userId);
+        // 3. 事务提交之后再投递 MQ
+        dispatchGenerateTask(session, userId, jdMd5, dto.getJdContent());
 
         // 4. 立即返回；前端轮询 GET /api/interview/{sessionId} 取结果
         return buildSessionVO(session, List.of());
@@ -92,24 +98,112 @@ public class InterviewServiceImpl implements InterviewService {
 
     @Override
     public SessionVO getSession(Long sessionId) {
-        Long userId = ThreadLocalUtil.get();
-        InterviewSession session = sessionMapper.selectById(sessionId);
-        if (session == null) {
-            throw new BusinessException("会话不存在");
-        }
-        if (!session.getUserId().equals(userId)) {
-            throw new BusinessException(403, "无权访问该会话");
-        }
-
+        Long userId = requireLogin();
+        InterviewSession session = requireOwnedSession(sessionId, userId);
         return buildSessionVO(session, questionService.listBySession(sessionId));
     }
 
     @Override
-    public AnswerResultVO submitAnswer(SubmitAnswerDTO dto) {
-        Long userId = ThreadLocalUtil.get();
-        if (userId == null) {
-            throw new BusinessException(401, "未登录");
+    public PageResultVO<SessionListItemVO> listSessions(int page, int size) {
+        Long userId = requireLogin();
+
+        // 页码与页大小做兜底，防止 -1 / 100000 这类入参把库拖垮
+        int safePage = Math.max(1, page);
+        int safeSize = Math.min(Math.max(1, size), 100);
+
+        Page<InterviewSession> result = sessionMapper.selectPage(
+                new Page<>(safePage, safeSize),
+                new LambdaQueryWrapper<InterviewSession>()
+                        .eq(InterviewSession::getUserId, userId)
+                        .orderByDesc(InterviewSession::getId));
+
+        List<InterviewSession> records = result.getRecords();
+        List<Long> sessionIds = records.stream().map(InterviewSession::getId).toList();
+
+        // 批量取计数：2 次查询搞定整页，而不是每条会话查两次（N+1）
+        Map<Long, Long> questionCounts = questionService.countBySessions(sessionIds);
+        Map<Long, Long> gradedCounts = answerService.countGradedBySessions(sessionIds);
+
+        List<SessionListItemVO> items = new ArrayList<>(records.size());
+        for (InterviewSession s : records) {
+            SessionListItemVO vo = new SessionListItemVO();
+            vo.setSessionId(s.getId());
+            vo.setPosition(s.getPosition());
+            vo.setTechStack(s.getTechStack());
+            vo.setStatus(s.getStatus());
+            vo.setCreatedAt(s.getCreatedAt());
+            vo.setQuestionCount(questionCounts.getOrDefault(s.getId(), 0L));
+            vo.setAnsweredCount(gradedCounts.getOrDefault(s.getId(), 0L));
+            items.add(vo);
         }
+        return PageResultVO.of(result.getTotal(), result.getCurrent(), result.getSize(), items);
+    }
+
+    @Override
+    public SessionDetailVO getSessionDetail(Long sessionId) {
+        Long userId = requireLogin();
+        InterviewSession session = requireOwnedSession(sessionId, userId);
+
+        List<Question> questions = questionService.listBySession(sessionId);
+        List<Answer> answers = answerService.listBySession(sessionId);
+
+        // 每题只保留最新一次回答。answers 已按 id 倒序，首次出现即最新
+        Map<Long, Answer> latestAnswerByQuestion = new LinkedHashMap<>();
+        for (Answer a : answers) {
+            latestAnswerByQuestion.putIfAbsent(a.getQuestionId(), a);
+        }
+
+        // 批量取反馈，避免逐条查询
+        Set<Long> feedbackIds = latestAnswerByQuestion.values().stream()
+                .map(Answer::getFeedbackId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Feedback> feedbackMap = answerService.mapByIds(feedbackIds);
+
+        List<QuestionAnswerVO> items = new ArrayList<>(questions.size());
+        long answered = 0;
+        for (Question q : questions) {
+            QuestionAnswerVO vo = new QuestionAnswerVO();
+            vo.setQuestionId(q.getId());
+            vo.setType(q.getType());
+            vo.setContent(q.getContent());
+            vo.setDifficulty(q.getDifficulty());
+            vo.setSortOrder(q.getSortOrder());
+
+            Answer a = latestAnswerByQuestion.get(q.getId());
+            if (a != null) {
+                vo.setAnswerId(a.getId());
+                vo.setAnswerContent(a.getContent());
+                vo.setAnswerStatus(a.getStatus());
+                vo.setScore(a.getScore());
+                if (AnswerStatus.GRADED.matches(a.getStatus())) {
+                    answered++;
+                }
+                Feedback fb = a.getFeedbackId() == null ? null : feedbackMap.get(a.getFeedbackId());
+                if (fb != null) {
+                    vo.setPros(fb.getPros());
+                    vo.setCons(fb.getCons());
+                    vo.setSuggestions(fb.getSuggestions());
+                }
+            }
+            items.add(vo);
+        }
+
+        SessionDetailVO detail = new SessionDetailVO();
+        detail.setSessionId(session.getId());
+        detail.setPosition(session.getPosition());
+        detail.setTechStack(session.getTechStack());
+        detail.setStatus(session.getStatus());
+        detail.setCreatedAt(session.getCreatedAt());
+        detail.setQuestionCount(questions.size());
+        detail.setAnsweredCount(answered);
+        detail.setItems(items);
+        return detail;
+    }
+
+    @Override
+    public AnswerResultVO submitAnswer(SubmitAnswerDTO dto) {
+        Long userId = requireLogin();
 
         // 1. 查题目
         Question question = questionService.getById(dto.getQuestionId());
@@ -118,15 +212,18 @@ public class InterviewServiceImpl implements InterviewService {
         }
 
         // 2. 查会话并校验归属
-        InterviewSession session = sessionMapper.selectById(question.getSessionId());
-        if (session == null || !session.getUserId().equals(userId)) {
-            throw new BusinessException(403, "无权访问该题目");
+        InterviewSession session = requireOwnedSession(question.getSessionId(), userId);
+
+        // 3. 出题尚未完成 / 已失败时不允许作答，避免把回答挂到一道不存在的题上
+        if (!SessionStatus.DONE.matches(session.getStatus())) {
+            throw new BusinessException(400, "会话尚未出题完成，请稍后重试");
         }
 
-        // 3. 写入会话记忆（用户本轮回答）
+        // 4. 写入会话记忆（用户本轮回答）
         sessionMemoryService.append(session.getId(), "user", dto.getContent());
 
-        // 4. 落库回答（status=0 待评分）
+        // 5. 落库回答（status=0 待评分）。此处无事务，insert 立即提交，
+        //    因此下面投递 MQ 时数据一定已可见。
         Answer answer = new Answer();
         answer.setQuestionId(dto.getQuestionId());
         answer.setSessionId(session.getId());
@@ -136,7 +233,7 @@ public class InterviewServiceImpl implements InterviewService {
         answer.setStatus(AnswerStatus.PENDING.getCode());
         answerMapper.insert(answer);
 
-        // 5. 投递 MQ，AI 评分交给消费端执行。
+        // 6. 投递 MQ，AI 评分交给消费端执行。
         //    不能同步调：AI 评分耗时 5-15 秒，会长时间占用 HTTP 线程，
         //    并发上来会耗尽 Tomcat 线程池，连累登录、查题等所有接口。
         interviewProducer.sendAnswerTask(new AnswerMessage(
@@ -145,7 +242,7 @@ public class InterviewServiceImpl implements InterviewService {
 
         log.info("回答已提交（AI 异步评分中）: answerId={}", answer.getId());
 
-        // 6. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
+        // 7. 立即返回，前端轮询 GET /api/interview/answer/{answerId} 取结果
         AnswerResultVO vo = new AnswerResultVO();
         vo.setAnswerId(answer.getId());
         vo.setStatus(AnswerStatus.PENDING.getCode());
@@ -154,10 +251,7 @@ public class InterviewServiceImpl implements InterviewService {
 
     @Override
     public AnswerResultVO getAnswerResult(Long answerId) {
-        Long userId = ThreadLocalUtil.get();
-        if (userId == null) {
-            throw new BusinessException(401, "未登录");
-        }
+        Long userId = requireLogin();
 
         Answer answer = answerMapper.selectById(answerId);
         if (answer == null) {
@@ -184,34 +278,42 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     /**
-     * 复用已有题目（本人相同 JD 命中缓存时调用）
+     * 投递出题任务。
+     *
+     * **必须在会话事务提交之后调用**：若在事务内投递，消息可能先于事务提交被消费，
+     * 消费端按 READ_COMMITTED 读不到会话行，于是题目写进去了、会话却永远停在「出题中」。
+     *
+     * 投递失败时事务已提交、无法回滚，因此走补偿：把会话置为失败终态，
+     * 让前端拿到明确结果而不是无限轮询。
      */
-    private SessionVO reuseQuestions(Long userId, CreateSessionDTO dto, String jdMd5, Long sourceSessionId) {
-        InterviewSession session = newSession(userId, jdMd5, dto.getJdContent(),
-                SessionStatus.DONE, "复用缓存", "复用缓存");
-        sessionMapper.insert(session);
-
-        List<Question> copies = questionService.copyTo(sourceSessionId, session.getId());
-
-        log.info("命中 JD 缓存，复用题目: sessionId={}, 复用 {} 道题", session.getId(), copies.size());
-        return buildSessionVO(session, copies);
+    private void dispatchGenerateTask(InterviewSession session, Long userId, String jdMd5, String jdContent) {
+        try {
+            interviewProducer.sendGenerateTask(new InterviewMessage(session.getId(), userId, jdContent, jdMd5));
+        } catch (RuntimeException e) {
+            log.error("MQ 投递失败，补偿标记会话为失败: sessionId={}", session.getId(), e);
+            sessionService.updateStatus(session.getId(), SessionStatus.FAILED);
+            throw e;
+        }
     }
 
-    /**
-     * 构造会话实体
-     *
-     * 创建与复用两条路径原先各写了一遍字段赋值，漏一个就会出诡异 bug，
-     * 统一收口到这里。
-     */
-    private InterviewSession newSession(Long userId, String jdMd5, String jdContent,
-                                        SessionStatus status, String position, String techStack) {
-        InterviewSession session = new InterviewSession();
-        session.setUserId(userId);
-        session.setJdMd5(jdMd5);
-        session.setJdContent(jdContent);
-        session.setPosition(position);
-        session.setTechStack(techStack);
-        session.setStatus(status.getCode());
+    /** 取当前登录用户，未登录直接 401 */
+    private Long requireLogin() {
+        Long userId = ThreadLocalUtil.get();
+        if (userId == null) {
+            throw new BusinessException(401, "未登录");
+        }
+        return userId;
+    }
+
+    /** 取会话并校验归属，不存在 404、非本人 403 */
+    private InterviewSession requireOwnedSession(Long sessionId, Long userId) {
+        InterviewSession session = sessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new BusinessException("会话不存在");
+        }
+        if (!session.getUserId().equals(userId)) {
+            throw new BusinessException(403, "无权访问该会话");
+        }
         return session;
     }
 

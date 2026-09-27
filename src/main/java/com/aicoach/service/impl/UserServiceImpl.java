@@ -1,17 +1,20 @@
 package com.aicoach.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 import com.aicoach.common.BusinessException;
 import com.aicoach.common.JwtUtil;
 import com.aicoach.common.ThreadLocalUtil;
 import com.aicoach.dto.LoginDTO;
 import com.aicoach.dto.LoginVO;
 import com.aicoach.dto.RegisterDTO;
+import com.aicoach.dto.UpdateUserDTO;
 import com.aicoach.dto.UserInfoVO;
 import com.aicoach.entity.User;
 import com.aicoach.mapper.UserMapper;
 import com.aicoach.service.UserService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -82,15 +85,54 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public UserInfoVO getCurrentUser() {
+        return BeanUtil.copyProperties(requireCurrentUser(), UserInfoVO.class);
+    }
+
+    @Override
+    public UserInfoVO updateCurrentUser(UpdateUserDTO dto) {
+        Long userId = requireLogin();
+
+        // 用 UpdateWrapper 做定向更新，只 set 允许改的字段。
+        // 若直接 updateById(user)，password 等字段会一并写回，
+        // 一旦实体与库中数据不一致就有被覆盖的风险。
+        LambdaUpdateWrapper<User> update = new LambdaUpdateWrapper<User>().eq(User::getId, userId);
+        boolean changed = false;
+        if (StrUtil.isNotBlank(dto.getNickname())) {
+            update.set(User::getNickname, dto.getNickname());
+            changed = true;
+        }
+        if (dto.getAvatar() != null) {
+            // 传空串表示清空头像
+            update.set(User::getAvatar, dto.getAvatar());
+            changed = true;
+        }
+        if (!changed) {
+            throw new BusinessException(400, "没有需要更新的字段");
+        }
+        userMapper.update(null, update);
+
+        User user = requireCurrentUser();
+        log.info("用户信息已更新: id={}, nickname={}", userId, user.getNickname());
+        return BeanUtil.copyProperties(user, UserInfoVO.class);
+    }
+
+    /** 取当前登录用户 id，未登录直接 401 */
+    private Long requireLogin() {
         Long userId = ThreadLocalUtil.get();
         if (userId == null) {
             throw new BusinessException(401, "未登录");
         }
+        return userId;
+    }
+
+    /** 取当前登录用户实体，不存在则报错 */
+    private User requireCurrentUser() {
+        Long userId = requireLogin();
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException("用户不存在");
         }
-        return BeanUtil.copyProperties(user, UserInfoVO.class);
+        return user;
     }
 
     /**

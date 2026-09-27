@@ -5,6 +5,9 @@ import com.aicoach.common.RateLimit;
 import com.aicoach.common.Result;
 import com.aicoach.dto.AnswerResultVO;
 import com.aicoach.dto.CreateSessionDTO;
+import com.aicoach.dto.PageResultVO;
+import com.aicoach.dto.SessionDetailVO;
+import com.aicoach.dto.SessionListItemVO;
 import com.aicoach.dto.SessionVO;
 import com.aicoach.dto.SubmitAnswerDTO;
 import com.aicoach.service.InterviewService;
@@ -15,13 +18,22 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 模拟面试 Controller
  *
- * - POST /api/interview/create        创建会话（AI 出题），需 JWT
- * - GET  /api/interview/{sessionId}   会话详情，需 JWT
+ * - POST /api/interview/create                创建会话（AI 异步出题），需 JWT
+ * - GET  /api/interview/sessions              我的会话列表（分页）
+ * - GET  /api/interview/sessions/{id}         会话完整详情（题目 + 回答 + 反馈）
+ * - GET  /api/interview/{sessionId}           会话详情（含题目），轮询出题结果
+ * - POST /api/interview/answer                提交回答（AI 异步评分）
+ * - GET  /api/interview/answer/{answerId}     轮询评分结果
+ *
+ * 说明：/sessions 是字面量路径，/{sessionId} 是变量路径。
+ * Spring Boot 3 的 PathPatternParser 会优先匹配更具体的字面量，与声明顺序无关，
+ * 所以 "sessions" 不会被当成 sessionId 吃掉。
  */
 @RestController
 @RequestMapping("/api/interview")
@@ -37,9 +49,18 @@ public class InterviewController {
         return Result.success(interviewService.createSession(dto));
     }
 
-    @GetMapping("/{sessionId}")
-    public Result<SessionVO> get(@PathVariable Long sessionId) {
-        return Result.success(interviewService.getSession(sessionId));
+    /** 我的会话列表（分页） */
+    @GetMapping("/sessions")
+    public Result<PageResultVO<SessionListItemVO>> listSessions(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return Result.success(interviewService.listSessions(page, size));
+    }
+
+    /** 会话完整详情：题目 + 每题最新回答 + 评分反馈 */
+    @GetMapping("/sessions/{sessionId}")
+    public Result<SessionDetailVO> sessionDetail(@PathVariable Long sessionId) {
+        return Result.success(interviewService.getSessionDetail(sessionId));
     }
 
     /** 每个用户每天最多 10 次 AI 评分。
@@ -54,5 +75,11 @@ public class InterviewController {
     @GetMapping("/answer/{answerId}")
     public Result<AnswerResultVO> getAnswerResult(@PathVariable Long answerId) {
         return Result.success(interviewService.getAnswerResult(answerId));
+    }
+
+    /** 会话详情（含题目），出题中时前端靠这个接口轮询 */
+    @GetMapping("/{sessionId}")
+    public Result<SessionVO> get(@PathVariable Long sessionId) {
+        return Result.success(interviewService.getSession(sessionId));
     }
 }

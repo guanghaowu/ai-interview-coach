@@ -9,6 +9,7 @@ import com.aicoach.entity.InterviewSession;
 import com.aicoach.mapper.AiCallLogMapper;
 import com.aicoach.mapper.InterviewSessionMapper;
 import com.aicoach.service.QuestionService;
+import com.aicoach.service.SessionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,9 @@ import org.springframework.stereotype.Component;
  * 异步执行 AI 出题，带：
  * - 指数退避重试（应对三方 API 抖动）
  * - 幂等去重（ai_call_log 唯一键）
+ *
+ * 状态变更一律走 {@link SessionService}：它带事务，并内置「已完成不允许改判为失败」的守卫。
+ * 本类自己不加 @Transactional —— 内部私有方法自调用不会走代理，加了也是白加。
  */
 @Slf4j
 @Component
@@ -40,6 +44,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
     private final InterviewSessionMapper sessionMapper;
     private final AiCallLogMapper aiCallLogMapper;
     private final QuestionService questionService;
+    private final SessionService sessionService;
 
     @Override
     public void onMessage(InterviewMessage msg) {
@@ -73,7 +78,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
             int saved = questionService.saveGenerated(msg.getSessionId(), result.getQuestions());
 
             // 4. 更新会话状态为「已完成」
-            updateStatus(msg.getSessionId(), SessionStatus.DONE);
+            sessionService.updateStatus(msg.getSessionId(), SessionStatus.DONE);
 
             // 5. 记录幂等标记
             markProcessed(msg);
@@ -90,7 +95,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
                 log.warn("会话已完成，忽略本次异常: sessionId={}", msg.getSessionId());
                 return;
             }
-            updateStatus(msg.getSessionId(), SessionStatus.FAILED);
+            sessionService.updateStatus(msg.getSessionId(), SessionStatus.FAILED);
             // 抛出异常，交给 RocketMQ 重试机制
             throw new RuntimeException("出题任务失败: " + e.getMessage(), e);
         }
@@ -101,9 +106,11 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
      * 不能直接 return —— 否则当前会话永远停在 status=0，前端永远轮询不到结果。
      */
     private void reuseFromProcessed(InterviewMessage msg) {
-        // 防重：当前会话已有题目说明之前复制过（消息重投），只补状态不再复制，否则题目会翻倍
+        // 防重：当前会话已有题目说明之前复制过（消息重投），只补状态不再复制，否则题目会翻倍。
+        // 因为「复制 + 置完成」是原子的（见 copyQuestionsAndMarkDone），
+        // 有题目就等价于复制完整了。
         if (questionService.countBySession(msg.getSessionId()) > 0) {
-            updateStatus(msg.getSessionId(), SessionStatus.DONE);
+            sessionService.updateStatus(msg.getSessionId(), SessionStatus.DONE);
             log.info("幂等复用：当前会话已有题目，仅补状态: sessionId={}", msg.getSessionId());
             return;
         }
@@ -119,7 +126,7 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
 
         if (existing == null) {
             log.warn("命中幂等但找不到可复用的会话: sessionId={}", msg.getSessionId());
-            updateStatus(msg.getSessionId(), SessionStatus.FAILED);
+            sessionService.updateStatus(msg.getSessionId(), SessionStatus.FAILED);
             return;
         }
 
@@ -127,22 +134,14 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         if (questionService.countBySession(existing.getId()) == 0) {
             log.warn("可复用会话无题目: sessionId={}, 源 sessionId={}",
                     msg.getSessionId(), existing.getId());
-            updateStatus(msg.getSessionId(), SessionStatus.FAILED);
+            sessionService.updateStatus(msg.getSessionId(), SessionStatus.FAILED);
             return;
         }
 
-        int copied = questionService.copyTo(existing.getId(), msg.getSessionId()).size();
-        updateStatus(msg.getSessionId(), SessionStatus.DONE);
+        // 复制题目 + 置为完成在同一事务里：中途失败整体回滚，
+        // 不会留下「题目不全却已完成」的会话
+        int copied = sessionService.copyQuestionsAndMarkDone(existing.getId(), msg.getSessionId());
         log.info("幂等复用完成: sessionId={}, 复用 {} 道题", msg.getSessionId(), copied);
-    }
-
-    /** 更新会话状态（原来这段在 4 个地方各写了一遍） */
-    private void updateStatus(Long sessionId, SessionStatus status) {
-        InterviewSession session = sessionMapper.selectById(sessionId);
-        if (session != null) {
-            session.setStatus(status.getCode());
-            sessionMapper.updateById(session);
-        }
     }
 
     private boolean isAlreadyProcessed(InterviewMessage msg) {

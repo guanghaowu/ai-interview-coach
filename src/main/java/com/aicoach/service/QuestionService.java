@@ -12,6 +12,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 题目读写服务
@@ -45,6 +47,22 @@ public class QuestionService {
         Long count = questionMapper.selectCount(
                 new LambdaQueryWrapper<Question>().eq(Question::getSessionId, sessionId));
         return count == null ? 0L : count;
+    }
+
+    /**
+     * 一次查询拿到多个会话的题目数。
+     *
+     * 列表页最多 20 条会话、每条最多几道题，用「一次 IN 查询 + 内存分组」
+     * 把 N 次 count 压成 1 次，避免列表接口的 N+1 查询。
+     */
+    public Map<Long, Long> countBySessions(List<Long> sessionIds) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Question> list = questionMapper.selectList(
+                new LambdaQueryWrapper<Question>().in(Question::getSessionId, sessionIds));
+        return list.stream()
+                .collect(Collectors.groupingBy(Question::getSessionId, Collectors.counting()));
     }
 
     /**
