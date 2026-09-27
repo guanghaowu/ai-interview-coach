@@ -66,17 +66,21 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
 
             // 2. 跑 AgentLoop 出题：Planner 拆维度 → Executor 出题 → Critic 审核 →
             //    不合格则定向修订（最多两轮）。每次模型调用的重试、降级策略都在 AgentLoop 内部。
+            //    这里埋点记录真实耗时：它是「同步模型下用户要等多久」的实测值，
+            //    也是量化 MQ 异步化收益的唯一依据（见 docs/性能压测报告.md）。
+            long startMs = System.currentTimeMillis();
             AgentResult result = agentLoop.run(msg.getJdContent());
+            int costMs = (int) (System.currentTimeMillis() - startMs);
 
             // 3. 落库题目 + 置完成 + 记录 Agent 轮数（同一事务，避免「题目不全却已完成」）
             int saved = sessionService.saveQuestionsAndMarkDone(
                     msg.getSessionId(), result.questions(), result.rounds());
 
-            // 4. 记录幂等标记
-            markProcessed(msg);
+            // 4. 记录幂等标记（同时落耗时）
+            markProcessed(msg, costMs);
 
-            log.info("出题完成: sessionId={}, 题目数={}, agent轮数={}, 计划={}",
-                    msg.getSessionId(), saved, result.rounds(),
+            log.info("出题完成: sessionId={}, 题目数={}, agent轮数={}, AI耗时={}ms, 计划={}",
+                    msg.getSessionId(), saved, result.rounds(), costMs,
                     InterviewAgentLoop.describePlan(result.plan()));
 
         } catch (Exception e) {
@@ -147,11 +151,12 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         return count != null && count > 0;
     }
 
-    private void markProcessed(InterviewMessage msg) {
+    private void markProcessed(InterviewMessage msg, int durationMs) {
         AiCallLog logEntity = new AiCallLog();
         logEntity.setUserId(msg.getUserId());
         logEntity.setCallMd5(msg.getJdMd5());
         logEntity.setToolName("agentLoop.generateQuestions");
+        logEntity.setDurationMs(durationMs);
         logEntity.setStatus(CALL_SUCCESS);
         try {
             aiCallLogMapper.insert(logEntity);

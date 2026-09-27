@@ -112,6 +112,7 @@ CREATE TABLE `ai_call_log` (
     `tool_name`      VARCHAR(50)  DEFAULT NULL,
     `prompt_tokens`  INT          DEFAULT NULL,
     `total_tokens`   INT          DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL COMMENT 'AI 调用真实耗时(ms)，用于量化异步化收益',
     `status`         TINYINT NOT NULL DEFAULT 0 COMMENT '0=失败 1=成功',
     `created_at`     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),

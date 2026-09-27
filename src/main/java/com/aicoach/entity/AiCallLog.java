@@ -33,6 +33,9 @@ public class AiCallLog implements Serializable {
 
     private Integer totalTokens;
 
+    /** AI 调用真实耗时(ms)。用于量化异步化收益：同步模型下用户要等这么久，异步化后提交即返回 */
+    private Integer durationMs;
+
     /** 0=失败 1=成功 */
     private Integer status;
 
