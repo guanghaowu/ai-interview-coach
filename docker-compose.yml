@@ -1,4 +1,5 @@
-version: '3.8'
+# Compose 规范已废弃顶层 version 字段（写了会告警），故不声明。
+# 所有子命令均由 docker compose v2 自动识别。
 
 services:
   # ========== MySQL ==========

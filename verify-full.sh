@@ -13,23 +13,93 @@ curl_s() { curl -s --noproxy '*' "$@"; }
 PASS=0
 FAIL=0
 
-# 从 stdin 的 JSON 里按点分路径取值（列表用下标）
-jget() {
-  python -c "
+# ---------------------------------------------------------------
+# 探测 JSON 解析器
+#
+# 不能硬编码 `python`：在没把 python 加进 PATH 的机器上（cmd 直接
+# `bash verify-full.sh`）会全线报 "python: command not found"，
+# 所有断言拿到空值、整份回归假失败。
+#
+# 而且「PATH 上有这个命令」不等于「它能用」（如 py 启动器没注册任何
+# Python），所以每个候选都实际跑一次才算数。
+# ---------------------------------------------------------------
+json_pick() {
+  for c in "$@"; do
+    [ -n "$c" ] || continue
+    if "$c" -c "import json,sys; sys.stdout.write('ok')" >/dev/null 2>&1; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  return 1
+}
+
+JSON_TOOL=$(json_pick python python3 py \
+  "/c/Users/Administrator/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe" \
+  "C:/Users/Administrator/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe" \
+  "/d/Users/anaconda3/python.exe" \
+  "D:/Users/anaconda3/python.exe" \
+  "/c/Python313/python.exe" "/c/Python312/python.exe" "/c/Python311/python.exe") || JSON_TOOL=""
+
+if [ -z "$JSON_TOOL" ] && command -v jq >/dev/null 2>&1; then
+  JSON_KIND=jq
+elif [ -n "$JSON_TOOL" ]; then
+  JSON_KIND=py
+else
+  echo "错误：找不到可用的 python 或 jq，无法解析 JSON。"
+  echo "  任选一种即可："
+  echo "    1) 装 Python: https://www.python.org/downloads/ （安装时勾选 Add to PATH）"
+  echo "    2) 装 jq:     winget install jqlang.jq"
+  echo "  或用 Anaconda 自带的 python（若装在 D:\\Users\\anaconda3）："
+  echo "    export PATH=\"/d/Users/anaconda3:\$PATH\" && bash verify-full.sh"
+  exit 1
+fi
+
+# 从 stdin 的 JSON 里按点分路径定位节点（列表用下标，如 data.records.0.questionCount）
+# mode: get=输出节点值，len=输出数组长度
+_jpath() {
+  local out path
+  if [ "$JSON_KIND" = "jq" ]; then
+    path=$(printf '%s' "$1" | sed -E 's/\.([0-9]+)/[\1]/g')
+    if [ "$2" = "len" ]; then
+      out=$(jq -r "(.$path // []) | length" 2>/dev/null)
+    else
+      out=$(jq -r ".$path // empty" 2>/dev/null)
+    fi
+  else
+    out=$("$JSON_TOOL" -c '
 import sys, json
+path, mode = sys.argv[1], sys.argv[2]
 try:
     d = json.load(sys.stdin)
 except Exception:
-    print(''); sys.exit()
-for k in sys.argv[1].split('.'):
-    if k == '': continue
+    print("" if mode == "get" else 0); sys.exit()
+for k in path.split("."):
+    if k == "": continue
     if isinstance(d, list): d = d[int(k)] if int(k) < len(d) else None
     elif isinstance(d, dict): d = d.get(k)
     else: d = None
     if d is None: break
-print('' if d is None else d)
-" "$1"
+if mode == "len":
+    print(len(d) if isinstance(d, list) else 0)
+else:
+    print("" if d is None else d)
+' "$1" "$2" 2>/dev/null)
+  fi
+  # Windows 下的解释器可能吐 \r\n，不剥掉会让 [ "$a" = "$b" ] 全部判不等
+  printf '%s' "$out" | tr -d '\r'
 }
+
+jget() { _jpath "$1" get; }   # 取值
+jlen() { _jpath "$1" len; }   # 取数组长度
+
+# 预检：应用是否可达。先给出人话提示，而不是让后面 40 项断言集体失败
+if ! curl_s -o /dev/null --max-time 5 "$BASE/api/health"; then
+  echo "错误：连不上 $BASE/api/health"
+  echo "  1) 先启动整套依赖： docker compose up -d"
+  echo "  2) 等应用健康：     docker ps   （看 ai-coach-app 是否为 healthy）"
+  echo "  3) 若刚改过代码，镜像必须重建： docker compose up -d --build"
+  exit 1
+fi
 
 ok()   { PASS=$((PASS+1)); echo "  [PASS] $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  [FAIL] $1"; }
@@ -43,6 +113,7 @@ PASSWD="123456"
 
 echo "=========================================="
 echo " 项目 A 全链路回归  $(date '+%F %T')"
+echo " JSON 解析器: $JSON_KIND ($JSON_TOOL)"
 echo "=========================================="
 
 # ---------- 1. 健康检查 ----------
@@ -119,13 +190,12 @@ STATUS=0
 for i in $(seq 1 45); do
   R=$(curl_s -H "$AUTH" "$BASE/api/interview/$SID")
   STATUS=$(echo "$R" | jget data.status)
-  QN=$(echo "$R" | jget "data.questions")
   if [ "$STATUS" = "1" ]; then echo "  ... 第 ${i} 次轮询出题完成"; break; fi
   if [ "$STATUS" = "2" ]; then echo "  ... 第 ${i} 次轮询 status=2（失败）"; break; fi
   sleep 2
 done
 check "出题完成 status" "$STATUS" "1"
-QCOUNT=$(echo "$R" | python -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',{}).get('questions') or []))")
+QCOUNT=$(echo "$R" | jlen "data.questions")
 if [ "$QCOUNT" -ge 3 ]; then ok "生成题目数 = $QCOUNT"; else bad "题目数过少: $QCOUNT"; fi
 QID=$(echo "$R" | jget "data.questions.0.id")
 
