@@ -30,4 +30,13 @@ public interface InterviewService {
 
     /** 查询评分结果（轮询用） */
     AnswerResultVO getAnswerResult(Long answerId);
+
+    /**
+     * 手动重试出题（会话处于失败态时可用）。
+     *
+     * 自动兜底（死信落库 + 定时重投）之外还要留这条路径，原因有二：
+     * 一是自动重投次数用尽后用户仍有自救手段，不必等人工介入；
+     * 二是用户就在页面上看着失败，让他点一下就恢复，比让他等 5 分钟体验好得多。
+     */
+    SessionVO retrySession(Long sessionId);
 }

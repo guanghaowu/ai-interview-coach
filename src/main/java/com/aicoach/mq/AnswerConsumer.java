@@ -29,7 +29,9 @@ import java.util.List;
 @RequiredArgsConstructor
 @RocketMQMessageListener(
         topic = InterviewProducer.ANSWER_TOPIC,
-        consumerGroup = "interview-answer-consumer-group"
+        consumerGroup = "interview-answer-consumer-group",
+        // 同 InterviewConsumer：重试 3 次后交给死信兜底 + 定时重投
+        maxReconsumeTimes = 3
 )
 public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
 

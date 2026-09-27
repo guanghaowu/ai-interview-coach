@@ -332,6 +332,32 @@ public class InterviewServiceImpl implements InterviewService {
         }
     }
 
+    @Override
+    public SessionVO retrySession(Long sessionId) {
+        Long userId = requireLogin();
+        InterviewSession session = requireOwnedSession(sessionId, userId);
+
+        // 只有失败态才允许重试：
+        //   - 出题中重复点重试 → 会重复调 AI（真烧 Token）
+        //   - 已完成时重试 → 会把已有题目作废，纯属破坏数据
+        if (!SessionStatus.FAILED.matches(session.getStatus())) {
+            throw new BusinessException(409, "只有出题失败的会话可以重试");
+        }
+
+        // 先置回「出题中」再投递：与 createSession 同样的顺序，
+        // 保证消息被消费时前端看到的已经是「出题中」而不是「失败」。
+        sessionService.updateStatus(sessionId, SessionStatus.GENERATING);
+
+        // 缓存里还留着「失败」的旧详情，必须失效，否则前端刷新还是失败态
+        responseCacheService.evictSessionDetail(userId, sessionId);
+        responseCacheService.evictSessionList(userId);
+
+        dispatchGenerateTask(session, userId, session.getJdMd5(), session.getJdContent());
+        log.info("用户手动重试出题: sessionId={}, userId={}", sessionId, userId);
+
+        return buildSessionVO(sessionMapper.selectById(sessionId), questionService.listBySession(sessionId));
+    }
+
     /** 取当前登录用户，未登录直接 401 */
     private Long requireLogin() {
         Long userId = ThreadLocalUtil.get();

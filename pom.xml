@@ -25,6 +25,7 @@
         <hutool.version>5.8.27</hutool.version>
         <rocketmq.version>2.3.1</rocketmq.version>
         <knife4j.version>4.5.0</knife4j.version>
+        <resilience4j.version>2.2.0</resilience4j.version>
     </properties>
 
     <dependencies>
@@ -130,6 +131,16 @@
             <groupId>com.github.xiaoymin</groupId>
             <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
             <version>${knife4j.version}</version>
+        </dependency>
+
+        <!-- 熔断降级（LLM 调用保护）。
+             只引 circuitbreaker 核心库、用编程式 API，不引 resilience4j-spring-boot3：
+             后者会带入自己的自动配置与 AOP，而我们的目标 Bean 是 LangChain4j 生成的
+             JDK 动态代理，注解式织入不可靠；显式装饰器更好调试也更好讲。 -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>${resilience4j.version}</version>
         </dependency>
 
         <!-- Lombok -->

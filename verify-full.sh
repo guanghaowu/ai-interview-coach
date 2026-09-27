@@ -3,7 +3,7 @@
 # 项目 A 全链路回归脚本（覆盖 PRD 全部 11 个接口）
 # 用法: bash verify-full.sh
 # 前提: docker compose up -d 且 ai-coach-app 已 healthy
-#       [17] 段需要 docker CLI 可用来查 Redis 缓存 key；
+#       [17][18] 段需要 docker CLI 可用来查 Redis 缓存 key / 失败任务表；
 #       无 docker 时该段会判 FAIL（其余段落不受影响）
 # =====================================================
 cd "$(dirname "$0")" || exit 1
@@ -362,6 +362,44 @@ check "出题完成后读到真实题目（非陈旧缓存）" "$(echo "$R" | jg
 R=$(curl_s -H "$AUTH" "$BASE/api/interview/sessions?page=1&size=10")
 check "新建会话已出现在列表（列表缓存已失效）" \
   "$(echo "$R" | jget data.records.0.sessionId)" "$NSID"
+
+# ---------- 18. 熔断降级与失败任务兜底 ----------
+# 高可用这条链路有 4 个独立失败模式，逐个验证：
+#   1) 熔断状态可观测（否则依赖挂了都不知道）
+#   2) 失败任务表可用（死信落库的落点）
+#   3) 重试接口的鉴权与状态守卫（越权 / 重复重试会烧 Token）
+#   4) 失败态会话能真的被重试恢复（否则兜底链路只是摆设）
+echo ""
+echo "[18] 熔断降级与失败任务兜底"
+
+# 18.1 健康检查暴露 LLM 熔断器状态
+R=$(curl_s "$BASE/api/health")
+check "健康检查含熔断器状态=CLOSED" "$(echo "$R" | jget llmCircuitBreaker.state)" "CLOSED"
+
+# 18.2 失败任务表存在且可查（死信落库的落点）
+FT=$(docker exec ai-coach-mysql mysql -uroot -p123456 -D ai_coach -N -B \
+  -e "SELECT COUNT(*) FROM failed_task;" 2>/dev/null | tr -d '\r ')
+check "failed_task 表可查" "$([ -n "$FT" ] && echo yes || echo no)" "yes"
+
+# 18.3 重试不存在的会话 -> 404（不能因为兜底接口就绕过存在性校验）
+R=$(curl_s -X POST -H "$AUTH" "$BASE/api/interview/99999999/retry")
+check "重试不存在的会话 -> 404" "$(echo "$R" | jget code)" "404"
+
+# 18.4 重试他人会话 -> 403（越权红线，兜底接口同样要守）
+R=$(curl_s -X POST -H "$AUTH2" "$BASE/api/interview/$SID/retry")
+check "重试他人会话 -> 403" "$(echo "$R" | jget code)" "403"
+
+# 18.5 重试已完成的会话 -> 409（守卫：否则会把已有题目作废并重复烧 AI）
+R=$(curl_s -X POST -H "$AUTH" "$BASE/api/interview/$SID/retry")
+check "重试已完成的会话 -> 409" "$(echo "$R" | jget code)" "409"
+
+# 18.6 造一个失败态会话，验证重试能真的把它救回来。
+#      直接把 status 改成 2（失败）来模拟「出题失败」，比等真实故障可控得多。
+docker exec ai-coach-mysql mysql -uroot -p123456 -D ai_coach \
+  -e "UPDATE interview_session SET status=2 WHERE id=$SID;" 2>/dev/null
+R=$(curl_s -X POST -H "$AUTH" "$BASE/api/interview/$SID/retry")
+check "失败态会话可被重试 -> code=0" "$(echo "$R" | jget code)" "0"
+check "重试后状态回到出题中(0)" "$(echo "$R" | jget data.status)" "0"
 
 echo ""
 echo "=========================================="

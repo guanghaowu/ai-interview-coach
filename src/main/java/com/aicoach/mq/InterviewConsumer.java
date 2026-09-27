@@ -32,7 +32,12 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 @RocketMQMessageListener(
         topic = InterviewProducer.TOPIC,
-        consumerGroup = "interview-consumer-group"
+        consumerGroup = "interview-consumer-group",
+        // 只重试 3 次（默认 16 次）：重试间隔是递增的，16 次要拖几十分钟，
+        // 而我们的兜底链路（死信落库 + 定时重投）本来就会接手。
+        // 把 MQ 重试压缩成「秒级快速抖动重试」，把长周期重试交给 FailedTaskRetryJob，
+        // 两层职责分明，也不会让重试消息长时间堆积在重试队列里。
+        maxReconsumeTimes = 3
 )
 public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
 

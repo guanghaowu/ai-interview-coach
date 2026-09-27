@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
  * - GET  /api/interview/{sessionId}           会话详情（含题目），轮询出题结果
  * - POST /api/interview/answer                提交回答（AI 异步评分）
  * - GET  /api/interview/answer/{answerId}     轮询评分结果
+ * - POST /api/interview/{sessionId}/retry     手动重试出题（会话失败时可用）
  *
  * 说明：/sessions 是字面量路径，/{sessionId} 是变量路径。
  * Spring Boot 3 的 PathPatternParser 会优先匹配更具体的字面量，与声明顺序无关，
@@ -81,5 +82,18 @@ public class InterviewController {
     @GetMapping("/{sessionId}")
     public Result<SessionVO> get(@PathVariable Long sessionId) {
         return Result.success(interviewService.getSession(sessionId));
+    }
+
+    /**
+     * 手动重试出题（仅当会话处于失败态）。
+     *
+     * 自动兜底（死信落库 + 定时重投）之外的用户自救路径。
+     * 同样要限流——重试会真实调用 AI，用独立令牌桶（5 次/天），
+     * 不去挤占正常出题的 10 次配额。
+     */
+    @RateLimit(key = "rate:interview:retry", window = 86400, limit = 5, type = LimitType.USER)
+    @PostMapping("/{sessionId}/retry")
+    public Result<SessionVO> retry(@PathVariable Long sessionId) {
+        return Result.success(interviewService.retrySession(sessionId));
     }
 }

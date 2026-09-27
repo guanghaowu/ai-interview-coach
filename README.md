@@ -33,7 +33,8 @@ AiInterviewCoach 用大模型解决这三点：粘贴一段 JD，系统自动解
 | 框架 | SpringBoot 3.2.5、Spring AOP |
 | 持久层 | MyBatis-Plus 3.5.9、Druid 连接池、MySQL 8.0 |
 | 缓存 / 限流 | Redis 7（响应缓存、会话记忆、令牌桶限流、幂等） |
-| 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试） |
+| 消息队列 | RocketMQ 5.3.1（AI 调用异步化、失败重试、死信兜底） |
+| 高可用 | Resilience4j 2.2.0（LLM 调用熔断）+ 失败任务表重投 |
 | 大模型 | LangChain4j 0.36.2 + DeepSeek（OpenAI 兼容协议） |
 | 安全 | JWT（JJWT 0.12.5）+ BCrypt 密码加密 |
 | 前端 | Vue 3.5 + Vite 5 + Vue Router + Pinia + Axios + Element Plus |
@@ -113,7 +114,8 @@ AI 调用放到 MQ 消费端异步执行，前端通过轮询获取结果。避�
 | GET | `/api/interview/sessions/{sessionId}` | 是 | 会话完整详情（题目 + 每题最新回答 + 评分反馈） |
 | POST | `/api/interview/answer` | 是 | 提交回答（AI 异步评分，限流 10 次/天） |
 | GET | `/api/interview/answer/{answerId}` | 是 | 轮询评分结果 |
-| GET | `/api/health` | 否 | 健康检查 |
+| POST | `/api/interview/{sessionId}/retry` | 是 | 手动重试出题（仅失败态可用，限流 5 次/天） |
+| GET | `/api/health` | 否 | 健康检查（含 LLM 熔断器状态） |
 
 **会话状态**：`0` = AI 出题中 ｜ `1` = 已完成 ｜ `2` = 失败
 **回答状态**：`0` = 待评分 ｜ `1` = 已评分 ｜ `2` = 评分失败
@@ -361,21 +363,62 @@ axios 响应拦截器按后端的错误模型分两类处理：业务异常是 `
 
 ---
 
+### 13. 高可用：熔断降级 + 失败任务兜底
+
+**问题**：在此之前，依赖（DeepSeek）故障时整条异步链路没有任何保护——
+
+- LLM 调用**无熔断**：每个请求都真实发起调用并等到 60 秒超时，MQ 消费线程被长时间占满
+- MQ 重试耗尽后消息进死信队列，**无人处理**：用户侧永久卡在「失败」，没有任何恢复路径
+
+**方案（三层，各司其职）**：
+
+| 层 | 机制 | 关键设计 |
+|---|---|---|
+| 快速失败 | Resilience4j 熔断（`GuardedInterviewAiService` 装饰器） | 窗口 10 次、最少 5 次开始统计、失败率 ≥50% 打开、打开 30s、半开放 3 次 |
+| 抖动重试 | `RetryUtil` 指数退避 1s→2s→4s；**熔断打开时直接放弃重试** | 不在注定失败的调用上白等退避时间 |
+| 兜底恢复 | MQ 重试 3 次 → 死信 → 落 `failed_task` → 定时重投（≤3 次）+ 用户手动重试 | **先对账业务状态再重投**，避免重复调 AI |
+
+**实测验证（故障注入，不是纸面设计）**：
+
+| 验证项 | 结果 |
+|---|---|
+| 注入无效 API Key 后连续失败 | 熔断器 `CLOSED → OPEN`，`failureRate=100%` |
+| 熔断打开后的调用 | **1 毫秒内快速失败**，日志「未发起真实调用」，无 401 请求发出 |
+| MQ 重试耗尽 | 消息进入 `%DLQ%interview-consumer-group`，落 `failed_task`（`status=0 待重投`） |
+| 恢复 Key 之后 | 定时任务自动重投 → 会话出题成功（5 道题）→ `failed_task.status=1` |
+
+> **完整闭环**：LLM 故障 → 熔断 → 快速失败 → 死信 → 落库 → 上游恢复 → 自动重投 → 业务恢复。
+> 全程无人工介入。
+
+**两个值得说的设计选择**：
+
+- **熔断包在「单次模型调用」层，而不是整个业务调用外层**：一次业务失败若三次调用全挂会计入
+  3 次熔断失败——这是**刻意**的。「连续多次调用都失败」正是依赖不可用的强信号，
+  这样能更快熔断；若包在最外层，按 LLM 单次 6~10 秒算要等半分钟以上才熔断，太慢。
+- **失败任务唯一键用 `(task_type, biz_id)` 而非消息 ID**：MQ 重试会生成新的消息 ID，
+  用消息 ID 去重等于没去重；而同一会话/同一回答在业务上只会成功一次。
+
+**可观测**：`/api/health` 暴露 `llmCircuitBreaker`（state / failureRate / bufferedCalls / failedCalls）。
+熔断打开时进程本身完全健康，只看 `UP` 是发现不了的。
+
+---
+
 ## 八、项目结构
 
 ```
 ai-interview-simulator/
 ├── src/main/java/com/aicoach/     # 后端
 │   ├── ai/              # LangChain4j 服务接口 + AgentLoop 编排器 + Function Calling 工具
-│   ├── common/          # Result / 异常 / JWT / 限流切面 / 缓存 key 构造
-│   ├── config/          # MyBatis-Plus / WebMvc / Redis / 响应缓存 / LangChain4j / Knife4j
-│   ├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / QuestionType / Difficulty）
+│   ├── common/          # Result / 异常 / JWT / 限流切面 / 重试 / 缓存 key 构造
+│   ├── config/          # MyBatis-Plus / WebMvc / Redis / 响应缓存 / 熔断 / LangChain4j / Knife4j
+│   ├── constant/        # 状态与题型枚举（SessionStatus / AnswerStatus / FailedTaskStatus / QuestionType / Difficulty）
 │   ├── controller/      # 接口层
 │   ├── dto/             # 入参 DTO / 出参 VO
-│   ├── entity/          # 数据库实体
+│   ├── entity/          # 数据库实体（含 FailedTask 失败任务）
+│   ├── job/             # 定时任务（FailedTaskRetryJob 失败任务重投）
 │   ├── mapper/          # MyBatis-Plus Mapper
-│   ├── mq/              # RocketMQ 生产者 / 消费者 / 消息体
-│   └── service/         # 业务层（含 ResponseCacheService 缓存精准失效）
+│   ├── mq/              # RocketMQ 生产者 / 消费者 / 死信消费者 / 消息体
+│   └── service/         # 业务层（含 ResponseCacheService 精准失效 / FailedTaskService 兜底）
 ├── client/                        # 前端（Vue 3 + Vite + Element Plus）
 │   ├── src/
 │   │   ├── api/         # axios 实例（JWT 注入 / 统一错误处理）+ 接口定义
@@ -391,15 +434,16 @@ ai-interview-simulator/
 │   └── run-bench.sh     # 一键跑完整压测并输出报告
 ├── docs/                          # PRD 与性能压测报告
 ├── docker-compose.yml   # 6 个服务（mysql / redis / namesrv / broker / app / web）
-└── verify-full.sh       # 全链路回归脚本（56 项断言，含缓存越权/失效红线）
+└── verify-full.sh       # 全链路回归脚本（63 项断言，含缓存越权/失效与熔断/重试红线）
 ```
 
 ---
 
 ## 九、数据库设计
 
-6 张表：`user`（用户）、`interview_session`（会话）、`question`（题目）、
-`answer`（回答）、`feedback`（评分反馈）、`ai_call_log`（AI 调用日志 / 幂等）。
+7 张表：`user`（用户）、`interview_session`（会话）、`question`（题目）、
+`answer`（回答）、`feedback`（评分反馈）、`ai_call_log`（AI 调用日志 / 幂等）、
+`failed_task`（失败任务 / 死信兜底与重投）。
 
 关键索引：
 - `interview_session(user_id, created_at DESC)` —— 用户会话列表

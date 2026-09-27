@@ -3,6 +3,7 @@ package com.aicoach;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * AI 面试模拟平台启动类
@@ -10,6 +11,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * @author aicoach
  */
 @SpringBootApplication
+@EnableScheduling
 @MapperScan("com.aicoach.mapper")
 public class AiInterviewCoachApplication {
 

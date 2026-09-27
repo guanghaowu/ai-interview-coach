@@ -119,3 +119,26 @@ CREATE TABLE `ai_call_log` (
     UNIQUE KEY `uk_user_md5` (`user_id`, `call_md5`),
     KEY `idx_user_created` (`user_id`, `created_at` DESC)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='AI 调用日志';
+
+-- -----------------------------------------------------
+-- 7. 失败任务表（死信兜底 + 定时重投）
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS `failed_task`;
+CREATE TABLE `failed_task` (
+    `id`          BIGINT NOT NULL AUTO_INCREMENT,
+    `task_type`   VARCHAR(20)  NOT NULL COMMENT 'INTERVIEW=出题 ANSWER=评分',
+    `topic`       VARCHAR(100) NOT NULL COMMENT '原始 topic，重投时原样发回',
+    `biz_id`      BIGINT NOT NULL COMMENT '业务主键：出题=session_id，评分=answer_id',
+    `user_id`     BIGINT       DEFAULT NULL,
+    `payload`     TEXT         NOT NULL COMMENT '原始消息体 JSON，重投时反序列化后发回',
+    `error_msg`   VARCHAR(500) DEFAULT NULL COMMENT '最后一次失败原因（截断存储）',
+    `retry_count` INT     NOT NULL DEFAULT 0 COMMENT '已被定时任务重投的次数',
+    `status`      TINYINT NOT NULL DEFAULT 0 COMMENT '0=待重投 1=重投成功 2=已放弃',
+    `created_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    -- 用「业务维度」而非消息 ID 做唯一键：MQ 重试会生成新消息 ID，
+    -- 用消息 ID 去重等于没去重；而同一会话/同一回答在业务上只会成功一次。
+    UNIQUE KEY `uk_type_biz` (`task_type`, `biz_id`),
+    KEY `idx_status_retry` (`status`, `retry_count`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='失败任务（死信兜底 + 重投）';
