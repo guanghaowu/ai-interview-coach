@@ -38,7 +38,7 @@ public class InterviewSession implements Serializable {
     /** AI 提取的技术栈 */
     private String techStack;
 
-    /** 1=进行中 2=已结束 */
+    /** 0=AI 出题中 1=已完成 2=失败（语义以 constant.SessionStatus 为准） */
     private Integer status;
 
     @TableField(fill = FieldFill.INSERT)

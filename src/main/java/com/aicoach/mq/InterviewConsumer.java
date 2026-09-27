@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -94,8 +95,15 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
 
         } catch (Exception e) {
             log.error("出题失败: sessionId={}", msg.getSessionId(), e);
-            // 标记会话为失败
+
             InterviewSession session = sessionMapper.selectById(msg.getSessionId());
+            // 已是「已完成」说明业务其实成功了，异常发生在成功之后（例如幂等标记撞唯一键）。
+            // 此时绝不能改判为失败，否则前端会看到状态从 1 抖到 2；也不需要重试。
+            if (session != null && Integer.valueOf(1).equals(session.getStatus())) {
+                log.warn("会话已完成，忽略本次异常: sessionId={}", msg.getSessionId());
+                return;
+            }
+            // 标记会话为失败
             if (session != null) {
                 session.setStatus(2);
                 sessionMapper.updateById(session);
@@ -193,6 +201,13 @@ public class InterviewConsumer implements RocketMQListener<InterviewMessage> {
         logEntity.setCallMd5(msg.getJdMd5());
         logEntity.setToolName("generateQuestions");
         logEntity.setStatus(1);
-        aiCallLogMapper.insert(logEntity);
+        try {
+            aiCallLogMapper.insert(logEntity);
+        } catch (DuplicateKeyException e) {
+            // uk_user_md5(user_id, call_md5) 已存在 = 幂等标记早就写好了
+            // （同一 JD 被并发创建、或 MQ 重投时会出现）。
+            // 这里必须吞掉异常：若抛到外层 catch，会把「已出题成功」的会话改判成「失败」。
+            log.info("幂等标记已存在，忽略: userId={}, jdMd5={}", msg.getUserId(), msg.getJdMd5());
+        }
     }
 }

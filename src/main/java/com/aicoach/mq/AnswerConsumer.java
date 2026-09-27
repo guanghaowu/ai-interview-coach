@@ -5,9 +5,8 @@ import com.aicoach.ai.InterviewAiService;
 import com.aicoach.common.RetryUtil;
 import com.aicoach.dto.FeedbackDTO;
 import com.aicoach.entity.Answer;
-import com.aicoach.entity.Feedback;
 import com.aicoach.mapper.AnswerMapper;
-import com.aicoach.mapper.FeedbackMapper;
+import com.aicoach.service.FeedbackService;
 import com.aicoach.service.SessionMemoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,7 +33,7 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
 
     private final InterviewAiService interviewAiService;
     private final AnswerMapper answerMapper;
-    private final FeedbackMapper feedbackMapper;
+    private final FeedbackService feedbackService;
     private final SessionMemoryService sessionMemoryService;
 
     @Override
@@ -67,19 +66,9 @@ public class AnswerConsumer implements RocketMQListener<AnswerMessage> {
                 throw new IllegalStateException("AI 返回评分为空");
             }
 
-            // 落库反馈
-            Feedback feedback = new Feedback();
-            feedback.setAnswerId(answer.getId());
-            feedback.setPros(fb.getPros());
-            feedback.setCons(fb.getCons());
-            feedback.setSuggestions(fb.getSuggestions());
-            feedbackMapper.insert(feedback);
-
-            // 更新回答为「已评分」
-            answer.setScore(fb.getScore());
-            answer.setFeedbackId(feedback.getId());
-            answer.setStatus(1);
-            answerMapper.updateById(answer);
+            // 落库反馈 + 回填回答：交给 FeedbackService 在短事务里原子完成。
+            // 注意事务边界——AI 调用在上面已经结束，不会被包进事务。
+            feedbackService.saveGradingResult(answer, fb);
 
             // AI 反馈写入会话记忆
             sessionMemoryService.append(msg.getSessionId(), "assistant", JSONUtil.toJsonStr(fb));

@@ -51,6 +51,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final InterviewProducer interviewProducer;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public SessionVO createSession(CreateSessionDTO dto) {
         Long userId = ThreadLocalUtil.get();
         if (userId == null) {
@@ -78,7 +79,9 @@ public class InterviewServiceImpl implements InterviewService {
             }
         }
 
-        // 2. 未命中：先创建会话（status=0 表示「AI 出题中」），主接口不阻塞
+        // 2. 未命中：先创建会话（status=0 表示「AI 出题中」），主接口不阻塞。
+        //    整个方法带 @Transactional：会话落库与 MQ 投递是一个原子操作，
+        //    投递失败就回滚，不会留下永远停在 status=0 的僵尸会话。
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
         session.setJdMd5(jdMd5);

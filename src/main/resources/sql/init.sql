@@ -35,7 +35,7 @@ CREATE TABLE `interview_session` (
     `jd_content`  TEXT                 DEFAULT NULL COMMENT '原始 JD',
     `position`    VARCHAR(100)         DEFAULT NULL COMMENT 'AI 提取的岗位名',
     `tech_stack`  VARCHAR(255)         DEFAULT NULL COMMENT 'AI 提取的技术栈',
-    `status`      TINYINT     NOT NULL DEFAULT 1 COMMENT '1=进行中 2=已结束',
+    `status`      TINYINT     NOT NULL DEFAULT 0 COMMENT '0=AI出题中 1=已完成 2=失败',
     `created_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at`  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     `deleted`     TINYINT     NOT NULL DEFAULT 0,
